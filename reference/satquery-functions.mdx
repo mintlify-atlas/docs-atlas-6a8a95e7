@@ -127,7 +127,7 @@ import { SatQueryError, humanizeError } from "@/lib/satquery";
 
 const networkErr = new SatQueryError("network", 0);
 console.log(humanizeError(networkErr));
-// "Could not reach the SatQuery backend. Check that it is running…"
+// "Could not reach the SatQuery backend. Check that it is running and that the address in Backend settings is correct."
 
 const tooLarge = new SatQueryError("Payload too large", 413);
 console.log(humanizeError(tooLarge));

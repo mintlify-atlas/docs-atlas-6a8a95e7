@@ -19,12 +19,18 @@ Inside TypeScript/JavaScript source files, values are read through the `import.m
 const apiKey = import.meta.env["VITE_GEMINI_API_KEY"];
 ```
 
-For reference, here is how `satquery.ts` reads `VITE_SATQUERY_API_URL`:
+For reference, here is how `satquery.ts` resolves the backend base URL, showing that `VITE_SATQUERY_API_URL` acts as a build-time fallback after `localStorage` is checked first:
 
 ```ts
-// src/lib/satquery.ts
-const env = import.meta.env["VITE_SATQUERY_API_URL"] as string | undefined;
-return (env ?? "").replace(/\/$/, "");
+// src/lib/satquery.ts — getApiBaseUrl()
+export function getApiBaseUrl(): string {
+  if (typeof window !== "undefined") {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) return stored.replace(/\/$/, "");
+  }
+  const env = import.meta.env["VITE_SATQUERY_API_URL"] as string | undefined;
+  return (env ?? "").replace(/\/$/, "");
+}
 ```
 
 ---
@@ -74,7 +80,7 @@ In the Vercel dashboard, navigate to your project → **Settings → Environment
   Obtain a free key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
 
   **Example value:**
-  ```
+  ```bash
   VITE_GEMINI_API_KEY=AIzaSy_YOUR_KEY_HERE
   ```
 
@@ -87,14 +93,15 @@ In the Vercel dashboard, navigate to your project → **Settings → Environment
 
 <ParamField path="VITE_SATQUERY_API_URL" type="string">
   Base URL of a self-hosted SatQuery Python backend. This variable is
-  **optional**. When it is set, the `analyze()` function in `src/lib/satquery.ts`
-  forwards image files and queries to `{VITE_SATQUERY_API_URL}/analyze` instead
-  of — or in addition to — the direct Gemini path. When it is absent or empty,
-  the value defaults to an empty string and the client falls back to the
-  locally-stored URL (if any) set via the in-app Backend settings panel.
+  **optional**. When the application resolves the backend address,
+  `getApiBaseUrl()` in `src/lib/satquery.ts` checks `localStorage` **first**
+  (set via the in-app Backend settings panel), and only falls back to
+  `VITE_SATQUERY_API_URL` when no value has been saved in the browser. Setting
+  this variable therefore acts as a build-time default that the user can
+  override at runtime through the settings panel.
 
   **Example value:**
-  ```
+  ```bash
   VITE_SATQUERY_API_URL=https://satquery.your-domain.com
   ```
 

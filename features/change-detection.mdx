@@ -1,7 +1,7 @@
 ---
-title: "Change Detection — Bi-Temporal Evidence Fusion"
+title: "Change Detection — Bi-Temporal Satellite Evidence Fusion"
 sidebarTitle: "Change Detection"
-description: "Upload a Pre-event and Post-event image pair to trigger multi-agent evidence fusion orchestration and receive a structured ChangeResult with affected area metrics."
+description: "Attach a Pre-event and Post-event image pair to trigger evidence fusion orchestration and get a structured ChangeResult with affected-area metrics."
 ---
 
 Attaching two images to a single query activates Earth Query Lens's bi-temporal analysis mode. Instead of a single Gemini call, the system runs a staged evidence-fusion orchestration that extracts features from each image independently before cross-correlating them for change detection. The result surfaces a structured summary card, an estimated affected-area percentage, and per-region bounding boxes.
@@ -33,16 +33,16 @@ When two files are present, the orchestration proceeds through three labelled st
 
 <Steps>
   <Step title="Initialize Evidence Fusion Agents">
-    Progress callback fires: *"Initializing Evidence Fusion Agents…"*. A 1-second pause represents cluster bootstrapping.
+    Progress callback fires: *"Initializing Evidence Fusion Agents..."*. A 1-second pause represents cluster bootstrapping.
   </Step>
   <Step title="Pre-event feature extraction (Agent 1)">
-    Progress: *"Agent 1: Extracting features from Pre-event image…"*. A 1.5-second pause simulates T1 tile processing.
+    Progress: *"Agent 1: Extracting features from Pre-event image..."*. A 1.5-second pause simulates T1 tile processing.
   </Step>
   <Step title="Post-event feature extraction (Agent 2)">
-    Progress: *"Agent 2: Extracting features from Post-event image…"*. A further 1.5-second pause simulates T2 tile processing.
+    Progress: *"Agent 2: Extracting features from Post-event image..."*. A further 1.5-second pause simulates T2 tile processing.
   </Step>
   <Step title="Evidence fusion and change detection (Agent 3)">
-    Progress: *"Agent 3: Fusing evidence and computing change detection…"*. The call to `analyzeWithGemini` is made here, with the original query appended by the instruction: *"Please focus heavily on change detection and evidence fusion between these two images."*
+    Progress: *"Agent 3: Fusing evidence and computing change detection..."*. The call to `analyzeWithGemini` is made here, with the original query appended by the instruction: *"Please focus heavily on change detection and evidence fusion between these two images."*
   </Step>
 </Steps>
 
@@ -180,7 +180,7 @@ export interface ExecutionStep {
 
 <Accordion title="Bi-temporal trace example output">
 
-```
+```text
 task: Bi-temporal Evidence Fusion
 
 ✓ Pre-event Extraction  — Extracted baseline features.

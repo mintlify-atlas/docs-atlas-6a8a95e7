@@ -1,5 +1,5 @@
 ---
-title: "BackendSettings Component — API Key & Gradio URL"
+title: "BackendSettings Component: API Key & Gradio URL Config"
 sidebarTitle: "BackendSettings"
 description: "Floating settings popover that stores the Gemini API key and GeoChat Gradio URL in localStorage and broadcasts changes to the rest of the app."
 ---
@@ -47,7 +47,7 @@ A `320 px`-wide panel that drops below the trigger button and contains:
 
 ## State & storage lifecycle
 
-```
+```text
 Mount
  └─ useEffect reads localStorage
       ├─ satquery.apikey   → geminiKey state

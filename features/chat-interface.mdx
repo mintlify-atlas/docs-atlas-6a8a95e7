@@ -41,7 +41,7 @@ The input bar lives at the bottom of the chat view. It auto-grows up to 200 px a
     Enter any natural-language question about the imagery. Leave the text box empty to re-run analysis on previously uploaded images.
   </Step>
   <Step title="Press Send or Enter">
-    The button becomes a spinning `Loader2` icon while analysis runs. A progress banner appears above the input bar showing the current pipeline stage (e.g. *"Agent 2: Extracting features from Post-event image…"*).
+    The button becomes a spinning `Loader2` icon while analysis runs. A progress banner appears above the input bar showing the current pipeline stage (e.g. *"Agent 2: Extracting features from Post-event image..."*).
   </Step>
   <Step title="Read the structured response">
     The assistant bubble renders an **Answer card**, optional **Evidence chips**, a **Change detection card** (for bi-temporal queries), image overlays with bounding boxes, and a collapsible **Execution Trace** panel.
@@ -64,11 +64,12 @@ The displayed string updates several times during a bi-temporal run:
 
 | Stage | Banner text |
 |---|---|
-| Startup | `Initializing Evidence Fusion Agents…` |
-| Image 1 | `Agent 1: Extracting features from Pre-event image…` |
-| Image 2 | `Agent 2: Extracting features from Post-event image…` |
-| Fusion | `Agent 3: Fusing evidence and computing change detection…` |
-| Single image | `Analyzing single image…` |
+| Pre-flight | `Initializing...` |
+| Startup | `Initializing Evidence Fusion Agents...` |
+| Image 1 | `Agent 1: Extracting features from Pre-event image...` |
+| Image 2 | `Agent 2: Extracting features from Post-event image...` |
+| Fusion | `Agent 3: Fusing evidence and computing change detection...` |
+| Single image | `Analyzing single image...` |
 
 ## Multi-session sidebar
 
@@ -156,7 +157,7 @@ The returned images are then passed directly to the analysis function alongside 
 
 ## Auto-generated session titles
 
-When a new session receives its first message, `generateChatTitle` is called asynchronously to replace the default *"New Chat…"* placeholder with a concise 3–4 word description:
+When a new session receives its first message, `generateChatTitle` is called asynchronously to replace the default *"New Chat..."* placeholder with a concise 3–4 word description:
 
 ```typescript
 generateChatTitle(query.trim() || "Analyze image", apiKey).then(t => {

@@ -1,5 +1,5 @@
 ---
-title: "MapSelector Component — CesiumJS Region Drawing"
+title: "MapSelector Component: CesiumJS Globe Region Drawing"
 sidebarTitle: "MapSelector"
 description: "Interactive CesiumJS globe that lets users pan, zoom, draw a bounding-box region, and capture it as a PNG file for Gemini Vision analysis."
 ---
@@ -19,7 +19,7 @@ import { MapSelector } from "@/components/MapSelector";
 
   **Bounds tuple shape**
 
-  ```
+  ```text
   [
     [minLat, minLon],   // south-west corner, decimal degrees
     [maxLat, maxLon]    // north-east corner, decimal degrees
@@ -50,7 +50,7 @@ Both providers use `maximumLevel: 19`. `Cesium.Ion.defaultAccessToken` is intent
 
 ### Initial camera
 
-```
+```text
 destination : Cesium.Cartesian3.fromDegrees(0, 20, 25_000_000)
 heading     : 0.0 rad
 pitch       : -90° (straight down)
@@ -61,7 +61,7 @@ roll        : 0.0 rad
 
 Draw mode is activated by clicking **Draw Area**. The `mode` state drives a second `useEffect` that registers or tears down `ScreenSpaceEventHandler` listeners:
 
-```
+```text
 LEFT_DOWN  → record start Cartographic; attach live-updating CallbackProperty rectangle
 MOUSE_MOVE → update endRef so the rectangle stretches in real time
 LEFT_UP    → finalise bounds; minimum-size check; persist final rectangle; auto-switch to pan
@@ -71,7 +71,7 @@ LEFT_UP    → finalise bounds; minimum-size check; persist final rectangle; aut
 
 After `LEFT_UP` the component rejects the gesture if the drawn box is too small to be meaningful:
 
-```
+```text
 Math.abs(maxLat - minLat) > 0.0001  OR  Math.abs(maxLon - minLon) > 0.0001
 ```
 
@@ -90,7 +90,7 @@ The final rectangle entity is removed immediately before the `html2canvas` captu
 
 Triggered by the **Send to Chat** button (visible only when `drawnBounds` is non-null):
 
-```
+```text
 1. setCapturing(true)
 2. Remove finalEntityRef rectangle from viewer.entities
 3. viewer.render()                    ← flush the removal before capture

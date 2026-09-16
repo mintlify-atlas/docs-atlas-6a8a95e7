@@ -1,7 +1,7 @@
 ---
 title: "Bounding Box Overlays — Visual Grounding on Images"
 sidebarTitle: "Bounding Boxes"
-description: "Color-coded bounding boxes are drawn on an HTML5 canvas overlay to spatially ground detected features, change regions, and evidence items in the response images."
+description: "Color-coded bounding boxes drawn on an HTML5 canvas ground detected features, change regions, and evidence items spatially within response images."
 ---
 
 Every image returned in an analysis response can carry a layer of bounding-box annotations that visually ground the model's findings. The annotations are drawn onto an HTML5 `<canvas>` element sized to match the source image, so boxes scale correctly regardless of how the image is displayed on screen. Clicking any annotated image opens a full-screen lightbox for closer inspection.
@@ -245,7 +245,7 @@ export interface AnalysisResponse {
 
 Gemini is instructed to return normalized float coordinates in the range 0.0–1.0:
 
-```
+```json
 "grounding": [
   { "bbox": [0.1, 0.25, 0.45, 0.6], "label": "Flooded area", "confidence": 88 },
   { "bbox": [0.55, 0.1, 0.9, 0.45], "label": "Building cluster", "confidence": 92 }

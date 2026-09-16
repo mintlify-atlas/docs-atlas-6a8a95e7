@@ -127,7 +127,7 @@ Only output the JSON object without any markdown wrappers.`
 
 ### Gemini API Endpoint
 
-```
+```http
 POST https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}
 Content-Type: application/json
 ```
@@ -372,7 +372,7 @@ export async function generateChatTitle(
 
 The function uses the same six-model fallback chain as `analyzeWithGemini`. The prompt sent to Gemini is:
 
-```
+```text
 Generate a very short, concise 3-4 word title for this chat based on the following
 user query. ONLY output the title, no quotes, no extra text. Query: "${query}"
 ```

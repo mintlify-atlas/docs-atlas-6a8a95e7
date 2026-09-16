@@ -84,14 +84,14 @@ Plain strings become `{ label: string }` objects. Full `EvidenceItem` objects (`
 
 When `execution_trace.disagreement` is a non-empty string or boolean `true`, a yellow banner with an `AlertTriangle` icon is shown above the evidence list:
 
-```
+```text
 execution_trace.disagreement (string) → displayed verbatim
 execution_trace.disagreement (true)   → "Evidence disagreement detected."
 ```
 
 ### Report download link
 
-```
+```text
 report_url present?  → use report_url directly
 report_url absent, report_id present?
   → getApiBaseUrl() + "/report/" + report_id
