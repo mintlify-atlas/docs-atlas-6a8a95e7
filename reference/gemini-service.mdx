@@ -1,0 +1,394 @@
+---
+title: "Gemini Service: Vision Analysis & Orchestration API"
+sidebarTitle: "Gemini Service"
+description: "Reference for geminiService.ts: API key via localStorage, Sentinel-SAR-Analyzer prompt, six-model fallback, GeoTIFF conversion, and bi-temporal fusion."
+---
+
+`geminiService.ts` is the core inference engine of Earth Query Lens. It manages your Gemini API key, converts raster imagery (including GeoTIFF) to base64-encoded PNG, constructs a structured system prompt that instructs Gemini to respond as the `Sentinel-SAR-Analyzer` persona, and dispatches requests against a prioritized chain of six Gemini Flash model variants — automatically retrying on `404`, `503`, and `429` errors before surfacing a failure. For two-image submissions it activates a multi-step Evidence Fusion orchestration flow that labels images with bi-temporal `T1`/`T2` prefixes and overrides the `execution_trace` with a fusion-specific pipeline record.
+
+---
+
+## `setApiKey`
+
+Persists a Gemini API key to `localStorage` under the key `satquery.apikey`. Passing an empty string or falsy value removes any previously stored key.
+
+```typescript
+export const setApiKey = (key: string): void
+```
+
+At runtime, `analyzeWithGemini` retrieves the key by reading `window.localStorage.getItem("satquery.apikey")` first, then falls back to the `VITE_GEMINI_API_KEY` environment variable. `setApiKey` is the preferred runtime mechanism — no page reload is required after calling it.
+
+<ParamField path="key" type="string" required>
+  The Gemini API key to store. Pass an empty string `""` to clear a previously saved key from `localStorage`.
+</ParamField>
+
+```typescript
+import { setApiKey } from '@/services/geminiService';
+
+// Store key (e.g. from a settings form)
+setApiKey('AIza...');
+
+// Clear the stored key
+setApiKey('');
+```
+
+<Warning>
+  The API key is written to `localStorage` in plaintext. It is never transmitted to any server other than `generativelanguage.googleapis.com`. Avoid storing keys on shared or public devices.
+</Warning>
+
+---
+
+## `analyzeWithGemini`
+
+The primary inference function. It encodes all supplied images (converting GeoTIFF files on-the-fly), builds the `Sentinel-SAR-Analyzer` system prompt, and sends a `POST` request to the Gemini `generateContent` endpoint. If a model responds with `404`, `503`, or `429` the function automatically advances to the next model in the fallback chain before raising an error.
+
+```typescript
+export async function analyzeWithGemini(
+  query: string,
+  files: File[],
+  signal?: AbortSignal
+): Promise<AnalysisResponse>
+```
+
+<ParamField path="query" type="string" required>
+  The plain-language geospatial question or instruction, e.g. `"Detect deforestation between these two images"`. This string is embedded verbatim into the system prompt sent to Gemini.
+</ParamField>
+
+<ParamField path="files" type="File[]" required>
+  One or two image files. GeoTIFF (`.tif` / `.tiff`) files are decoded via `convertTiffToPngBase64` and forwarded as `image/png`. All other file types are forwarded with their native MIME type. When exactly two files are supplied, each is prefixed with a bi-temporal label (see [Bi-temporal Labeling](#bi-temporal-labeling)).
+</ParamField>
+
+<ParamField path="signal" type="AbortSignal">
+  An optional `AbortSignal` from an `AbortController`. Aborting mid-flight throws an `AbortError` that propagates unchanged — the function does **not** swallow abort events.
+</ParamField>
+
+### GeoTIFF Conversion
+
+When a file ends with `.tif` or `.tiff`, `analyzeWithGemini` calls `convertTiffToPngBase64` internally. That helper:
+
+<Steps>
+  <Step title="Reads raster bands">
+    Uses `geotiff.js` to parse the array buffer and call `image.readRasters()`. Supports 1-band SAR, 3-band optical, and 16-bit float rasters.
+  </Step>
+  <Step title="Auto-contrast normalization">
+    Samples every `max(1, floor(band1.length / 10000))`-th pixel to approximate the global min/max, then linearly scales all pixel values to `[0, 255]`.
+  </Step>
+  <Step title="Canvas compositing">
+    Creates an off-screen `<canvas>` sized to the raster's width × height, maps the first three bands to R/G/B (falling back to band 1 for missing channels), writes the `ImageData`, and exports via `canvas.toDataURL('image/png')`.
+  </Step>
+  <Step title="Returns base64">
+    Strips the `data:image/png;base64,` prefix and returns the raw base64 string. The MIME type reported to Gemini is forced to `image/png`.
+  </Step>
+</Steps>
+
+### Bi-temporal Labeling
+
+When `files.length === 2`, a text part is inserted into the `parts` array immediately before each image's `inlineData` entry:
+
+```typescript
+// i === 0
+{ text: `=== IMAGE 1: PRE-EVENT BASELINE (T1) (${file.name}) ===` }
+
+// i === 1
+{ text: `=== IMAGE 2: POST-EVENT OBSERVATION (T2) (${file.name}) ===` }
+```
+
+This tells Gemini which image is the baseline and which is the observation, enabling accurate temporal change reasoning.
+
+### System Prompt (Sentinel-SAR-Analyzer Persona)
+
+The first `parts` entry in every request is the following system prompt. The `${query}` placeholder is replaced with the caller-supplied query string at runtime:
+
+```typescript
+{
+  text: `You are an advanced Satellite Imagery Analysis Model named "Sentinel-SAR-Analyzer".
+Your task is to analyze the provided images and respond to the query: "${query}".
+
+If multiple images are provided, it is a bi-temporal (change detection) or multi-modal task.
+
+Respond STRICTLY in JSON format matching this interface:
+{
+  "answer": "A detailed explanation of your findings, pretending you used specialized geospatial AI models.",
+  "confidence": 95,
+  "model": "Sentinel-SAR-Analyzer",
+  "task": "Scene VQA, Grounding, or Change Detection",
+  "evidence": [{"type": "visual", "label": "Observation", "detail": "What you see"}],
+  "grounding": [{"bbox": [minX, minY, maxX, maxY], "label": "Feature name", "confidence": 90}],
+  "change": {"change_detected": true/false, "description": "What changed"},
+  "metadata": [{"filename": "...", "modality": "optical"}]
+}
+Only output the JSON object without any markdown wrappers.`
+}
+```
+
+<Note>
+  Bounding-box coordinates in `grounding[].bbox` must be **normalized floats** between `0.0` and `1.0` (e.g. `[0.1, 0.25, 0.5, 0.75]`). The overlay renderer expects this range and will misplace boxes if raw pixel coordinates are returned.
+</Note>
+
+### Gemini API Endpoint
+
+```
+POST https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}
+Content-Type: application/json
+```
+
+### Request Body Shape
+
+```typescript
+{
+  contents: [
+    {
+      parts: [
+        { text: "<system prompt with query>" },
+        // When files.length === 2:
+        { text: "=== IMAGE 1: PRE-EVENT BASELINE (T1) (filename.tif) ===" },
+        { inlineData: { mimeType: "image/png", data: "<base64>" } },
+        { text: "=== IMAGE 2: POST-EVENT OBSERVATION (T2) (filename2.tif) ===" },
+        { inlineData: { mimeType: "image/png", data: "<base64>" } }
+      ]
+    }
+  ],
+  generationConfig: {
+    temperature: 0.1,
+    responseMimeType: "application/json"
+  }
+}
+```
+
+### Multi-Model Fallback Chain
+
+The function iterates through the following models in order, stopping at the first `2xx` response:
+
+```typescript
+const modelsToTry = [
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-3.5-flash-lite",
+  "gemini-3.8-flash",
+];
+```
+
+Fallback **only** advances on HTTP `404` (model not found), `503` (service unavailable), or `429` (rate limit). Any other non-`2xx` status (e.g. `400` invalid request, `401` bad key) breaks the loop immediately and throws a `SatQueryError` with that status code. Network errors also advance the loop unless the error is an `AbortError`, which is re-thrown immediately.
+
+### Retry Logic Summary
+
+| Status | Behaviour |
+|--------|-----------|
+| `2xx` | Success — parse response and return |
+| `404` | Advance to next model |
+| `429` | Advance to next model |
+| `503` | Advance to next model |
+| Other `4xx` / `5xx` | Break loop, throw `SatQueryError` |
+| `AbortError` | Re-throw immediately (no retry) |
+| Network error | Advance to next model |
+
+### `execution_trace` Injection
+
+After parsing Gemini's JSON response, `analyzeWithGemini` always overwrites `parsedResponse.execution_trace` with a canonical pipeline record — regardless of what Gemini may have returned in that field:
+
+```typescript
+parsedResponse.execution_trace = {
+  query: query,
+  detected_task: parsedResponse.task || "Scene Analysis",
+  model: "Sentinel-SAR-Analyzer",
+  steps: [
+    { name: "Image Preprocessing",      status: "done", detail: "Loaded image tiles." },
+    { name: "Feature Extraction",        status: "done", detail: "Extracted geospatial features." },
+    { name: "Change Detection / VQA",    status: "done", detail: "Analyzed spatial relationships." }
+  ]
+};
+```
+
+### Metadata Fallback
+
+If Gemini returns `metadata: []` or omits the field entirely, the function synthesizes a fallback array from the original `File` objects. The `modality` field is set to `"sar"` when the filename contains the substring `sar` (case-insensitive), and `"optical"` otherwise:
+
+```typescript
+parsedResponse.metadata = files.map(f => ({
+  filename: f.name,
+  modality: f.name.toLowerCase().includes('sar') ? 'sar' : 'optical'
+}));
+```
+
+### Expected JSON Response Format
+
+<ResponseField name="answer" type="string">
+  A detailed narrative of the model's findings for the given query.
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Confidence score as an integer percentage, e.g. `95`. Values between `0` and `100`.
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  Overwritten post-parse with the name of the Gemini model that responded successfully (e.g. `"gemini-3.5-flash"`).
+</ResponseField>
+
+<ResponseField name="task" type="string">
+  One of `"Scene VQA"`, `"Grounding"`, or `"Change Detection"`, as classified by Gemini.
+</ResponseField>
+
+<ResponseField name="evidence" type="EvidenceItem[]">
+  Array of observation objects. Each item has `type`, `label`, and `detail` string fields.
+</ResponseField>
+
+<ResponseField name="grounding" type="BoundingBox[]">
+  Spatial detections. Each entry contains `bbox: [minX, minY, maxX, maxY]` as normalized floats, a `label` string, and an integer `confidence`.
+</ResponseField>
+
+<ResponseField name="change" type="ChangeResult">
+  Change-detection result. Contains `change_detected: boolean` and a `description` string.
+</ResponseField>
+
+<ResponseField name="metadata" type="ImageMetadata[]">
+  Per-file metadata array. Guaranteed non-empty by the fallback logic described above.
+</ResponseField>
+
+<ResponseField name="execution_trace" type="ExecutionTrace">
+  Always present — injected by `analyzeWithGemini` after the API response is parsed. See the `execution_trace` section above.
+</ResponseField>
+
+---
+
+## `runOrchestration`
+
+The entry point used by the chat submit handler. For a single image it delegates directly to `analyzeWithGemini`. For two images it runs a multi-step simulated Evidence Fusion pipeline with interleaved progress callbacks, then overrides the `execution_trace` with a fusion-specific record naming `"Sentinel-Fusion-Cluster"` as the model.
+
+```typescript
+export async function runOrchestration(
+  query: string,
+  files: File[],
+  onProgress: (msg: string) => void,
+  signal?: AbortSignal
+): Promise<AnalysisResponse>
+```
+
+<ParamField path="query" type="string" required>
+  The plain-language analysis query, identical to the `query` parameter of `analyzeWithGemini`.
+</ParamField>
+
+<ParamField path="files" type="File[]" required>
+  One or two image files. Determines which execution path is taken (single-image vs. bi-temporal fusion).
+</ParamField>
+
+<ParamField path="onProgress" type="(msg: string) => void" required>
+  Callback invoked at each pipeline stage. The UI uses these messages to update the loading indicator in real time.
+</ParamField>
+
+<ParamField path="signal" type="AbortSignal">
+  Forwarded to the underlying `analyzeWithGemini` call.
+</ParamField>
+
+### Single-Image Path
+
+```typescript
+if (files.length < 2) {
+  onProgress("Analyzing single image...");
+  return analyzeWithGemini(query, files, signal);
+}
+```
+
+No additional delay is introduced. The `execution_trace` is the default one injected by `analyzeWithGemini`.
+
+### Bi-temporal Evidence Fusion Path
+
+When `files.length === 2`, the function emits four progress messages with simulated delays before dispatching the Gemini call:
+
+<Steps>
+  <Step title="Initialize agents">
+    `onProgress("Initializing Evidence Fusion Agents...")` — immediate, then `await 1 000 ms`.
+  </Step>
+  <Step title="Pre-event extraction">
+    `onProgress("Agent 1: Extracting features from Pre-event image...")` — then `await 1 500 ms`.
+  </Step>
+  <Step title="Post-event extraction">
+    `onProgress("Agent 2: Extracting features from Post-event image...")` — then `await 1 500 ms`.
+  </Step>
+  <Step title="Evidence fusion">
+    `onProgress("Agent 3: Fusing evidence and computing change detection...")` — then dispatches `analyzeWithGemini` with `query` appended by `" (Please focus heavily on change detection and evidence fusion between these two images.)"`.
+  </Step>
+</Steps>
+
+After the Gemini response returns, `runOrchestration` replaces the `execution_trace` with:
+
+```typescript
+res.execution_trace = {
+  query: query,
+  detected_task: "Bi-temporal Evidence Fusion",
+  model: "Sentinel-Fusion-Cluster",
+  steps: [
+    { name: "Pre-event Extraction",  status: "done", detail: "Extracted baseline features." },
+    { name: "Post-event Extraction", status: "done", detail: "Extracted current features." },
+    { name: "Evidence Fusion",       status: "done", detail: "Synthesized cross-temporal discrepancies." }
+  ]
+};
+```
+
+<Tip>
+  The `"Sentinel-Fusion-Cluster"` model label is a display identifier only. The actual inference is still performed by whichever Gemini Flash variant succeeds in `analyzeWithGemini`'s fallback chain. The resolved Gemini model name is stored in `response.model`.
+</Tip>
+
+### Full Usage Example
+
+```typescript
+import { runOrchestration } from '@/services/geminiService';
+
+const controller = new AbortController();
+
+const result = await runOrchestration(
+  "Has agricultural expansion occurred between these two images?",
+  [preEventFile, postEventFile],
+  (msg) => console.log("[progress]", msg),
+  controller.signal
+);
+
+console.log(result.change?.change_detected);   // true / false
+console.log(result.execution_trace?.model);    // "Sentinel-Fusion-Cluster"
+console.log(result.model);                     // e.g. "gemini-3.5-flash"
+```
+
+---
+
+## `generateChatTitle`
+
+Calls Gemini with a lightweight prompt to produce a concise 3–4 word title for a new chat session. Falls back to the first 30 characters of the query if no API key is provided, the query is blank, or every model in the fallback chain fails.
+
+```typescript
+export async function generateChatTitle(
+  query: string,
+  apiKey: string
+): Promise<string>
+```
+
+<ParamField path="query" type="string" required>
+  The user's first message for the chat session. Used both as the title-generation seed and as the fallback substring.
+</ParamField>
+
+<ParamField path="apiKey" type="string" required>
+  A Gemini API key. If empty or falsy, the function returns `query.slice(0, 30)` immediately without making a network request.
+</ParamField>
+
+The function uses the same six-model fallback chain as `analyzeWithGemini`. The prompt sent to Gemini is:
+
+```
+Generate a very short, concise 3-4 word title for this chat based on the following
+user query. ONLY output the title, no quotes, no extra text. Query: "${query}"
+```
+
+`generationConfig.temperature` is set to `0.7` (higher than the `0.1` used for analysis, to allow for more varied title phrasing). `responseMimeType` is **not** set — the response is read as plain text and stripped of `"` and `*` characters before being returned.
+
+```typescript
+import { generateChatTitle } from '@/services/geminiService';
+
+const title = await generateChatTitle(
+  "Detect urban sprawl near the river delta",
+  "AIza..."
+);
+// e.g. "Urban Sprawl Detection"
+```
+
+<Note>
+  Errors from individual model attempts are caught and logged as warnings via `console.warn`. Only after all six models fail without a successful response does the function return `query.slice(0, 30)`.
+</Note>

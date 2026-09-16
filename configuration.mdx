@@ -1,0 +1,217 @@
+---
+title: "Configuration Reference for Earth Query Lens"
+sidebarTitle: "Configuration"
+description: "Full reference for environment variables, the in-browser Backend Settings panel, and the satquery.ts API-URL helpers used by Earth Query Lens."
+---
+
+Earth Query Lens supports two complementary configuration surfaces: **environment variables** that are baked into the Vite build, and an **in-browser Backend Settings panel** that writes values to `localStorage` at runtime. Runtime values always take precedence over build-time variables, so you can override any setting without rebuilding or redeploying the application. This page documents every option in both surfaces, plus the programmatic `getApiBaseUrl` / `setApiBaseUrl` helpers exposed by `satquery.ts`.
+
+---
+
+## Environment Variables
+
+Environment variables are read by Vite at build time through `import.meta.env`. Create a `.env.local` file in the project root (Vite loads this file automatically and it is excluded from version control) and add the variables you need.
+
+```env .env.local
+# Copy this to .env.local and fill in your key
+# Get a free key at: https://aistudio.google.com/apikey
+VITE_GEMINI_API_KEY=AIzaSy_YOUR_KEY_HERE
+```
+
+<Note>
+  Vite only exposes variables prefixed with `VITE_` to client-side code. Any variable without that prefix is invisible to the browser bundle.
+</Note>
+
+### `VITE_GEMINI_API_KEY`
+
+<ParamField query="VITE_GEMINI_API_KEY" type="string" required>
+  Your Google Gemini API key. Obtain one for free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+
+  This value is read by `geminiService.ts` via the `getApiKey()` helper, which first checks `localStorage` (under the key `satquery.apikey`) and falls back to `import.meta.env["VITE_GEMINI_API_KEY"]` when no runtime override is present:
+
+  ```ts
+  const getApiKey = () => {
+    if (typeof window !== "undefined") {
+      const key = window.localStorage.getItem("satquery.apikey");
+      if (key) return key;
+    }
+    return import.meta.env["VITE_GEMINI_API_KEY"] as string | undefined;
+  };
+  ```
+
+  If neither source provides a key, `analyzeWithGemini` throws a `SatQueryError` with the message `"No Gemini API Key found. Please add it to your environment or settings."`.
+</ParamField>
+
+### `VITE_SATQUERY_API_URL`
+
+<ParamField query="VITE_SATQUERY_API_URL" type="string">
+  *(Optional)* Base URL of an external SatQuery-compatible REST backend (e.g. `https://api.example.com`). When set, the `analyze()` function in `satquery.ts` sends `POST /analyze` requests to this address instead of calling Gemini directly.
+
+  This value is read by `getApiBaseUrl()` in `satquery.ts`:
+
+  ```ts
+  const STORAGE_KEY = "satquery.api_base_url";
+
+  export function getApiBaseUrl(): string {
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem(STORAGE_KEY);
+      if (stored) return stored.replace(/\/$/, "");
+    }
+    const env = import.meta.env["VITE_SATQUERY_API_URL"] as string | undefined;
+    return (env ?? "").replace(/\/$/, "");
+  }
+  ```
+
+  Trailing slashes are stripped automatically. If neither `localStorage` nor the environment variable is set, `getApiBaseUrl()` returns an empty string, and any call to `analyze()` will throw:
+
+  ```
+  No backend address is configured yet. Open Backend settings and paste your SatQuery API address.
+  ```
+
+  Leave this variable unset if you are using the default client-side Gemini workflow.
+</ParamField>
+
+---
+
+## In-Browser Backend Settings Panel
+
+For deployments where you cannot inject environment variables (for example, when sharing a Vercel preview URL with a colleague), every configuration option is also available through the **Backend Settings** panel built into the app.
+
+### Opening the panel
+
+Click the **Settings cog** icon in the top-right corner of the application. A floating panel labelled **Configuration** appears. The icon shows a green check-circle when at least one credential is saved, and a red alert-circle when no credentials are found.
+
+### Fields
+
+<ParamField body="Gemini API Key" type="string" required>
+  Your Google Gemini API key (`AIzaSy…`). Saved to `localStorage` under the key `satquery.apikey`.
+
+  This value takes precedence over `VITE_GEMINI_API_KEY` because `getApiKey()` checks `localStorage` first.
+</ParamField>
+
+<ParamField body="GeoChat Gradio URL" type="string">
+  *(Optional)* The public URL of a GeoChat Gradio Space (e.g. `https://your-space.gradio.live`). Saved to `localStorage` under the key `satquery.gradiourl`.
+
+  When this URL is provided, the `analyzeWithGeoChat()` function connects to the Gradio `/predict` endpoint using the `@gradio/client` library:
+
+  ```ts
+  export async function analyzeWithGeoChat(
+    query: string,
+    files: File[]
+  ): Promise<AnalysisResponse> {
+    const gradioUrl =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("satquery.gradiourl")
+        : "";
+    if (!gradioUrl) {
+      throw new SatQueryError(
+        "No GeoChat Gradio URL found. Please add it to your environment or settings.",
+        0
+      );
+    }
+    // ...
+  }
+  ```
+</ParamField>
+
+### Saving and clearing credentials
+
+Click **Save** to persist both fields. The panel immediately updates the status indicator and calls the optional `onChange` callback with the new values. To clear a credential, delete the text from the field and click **Save** — the corresponding `localStorage` entry is removed.
+
+The underlying save logic from `BackendSettings.tsx`:
+
+```ts
+const save = () => {
+  if (typeof window !== "undefined") {
+    const setStorage = (k: string, v: string) =>
+      v
+        ? window.localStorage.setItem(k, v)
+        : window.localStorage.removeItem(k);
+    setStorage("satquery.apikey", geminiKey);
+    setStorage("satquery.gradiourl", gradioUrl);
+    setOnline(!!geminiKey || !!gradioUrl);
+  }
+  onChange?.({ geminiKey, gradioUrl });
+  setOpen(false);
+};
+```
+
+<Tip>
+  Runtime `localStorage` values survive page reloads and Vite hot-module replacements, so you only need to enter your credentials once per browser profile.
+</Tip>
+
+---
+
+## `localStorage` Key Reference
+
+| Key | Set by | Used by | Purpose |
+|-----|--------|---------|---------|
+| `satquery.apikey` | Backend Settings panel / `setApiKey()` | `getApiKey()` in `geminiService.ts` | Gemini API key override |
+| `satquery.gradiourl` | Backend Settings panel | `analyzeWithGeoChat()` in `geminiService.ts` | GeoChat Gradio endpoint |
+| `satquery.api_base_url` | `setApiBaseUrl()` | `getApiBaseUrl()` in `satquery.ts` | Optional SatQuery REST backend URL |
+
+---
+
+## Programmatic Helpers (`satquery.ts`)
+
+`src/lib/satquery.ts` exports two functions for reading and writing the optional REST backend URL programmatically.
+
+### `getApiBaseUrl()`
+
+Returns the currently configured SatQuery backend base URL. Checks `localStorage` first, then falls back to `VITE_SATQUERY_API_URL`. Trailing slashes are removed from both sources.
+
+```ts
+export function getApiBaseUrl(): string {
+  if (typeof window !== "undefined") {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) return stored.replace(/\/$/, "");
+  }
+  const env = import.meta.env["VITE_SATQUERY_API_URL"] as string | undefined;
+  return (env ?? "").replace(/\/$/, "");
+}
+```
+
+Returns an empty string if no URL is configured.
+
+### `setApiBaseUrl(url: string)`
+
+Persists a new backend URL to `localStorage`. Pass an empty string or whitespace-only string to clear the stored value and revert to the environment-variable fallback.
+
+```ts
+export function setApiBaseUrl(url: string) {
+  if (typeof window === "undefined") return;
+  const trimmed = url.trim().replace(/\/$/, "");
+  if (trimmed) window.localStorage.setItem(STORAGE_KEY, trimmed);
+  else window.localStorage.removeItem(STORAGE_KEY);
+}
+```
+
+<Warning>
+  `setApiBaseUrl` is a no-op in server-side rendering contexts (`typeof window === "undefined"`). Call it only after the component has mounted in the browser.
+</Warning>
+
+### `setApiKey(key: string)` (geminiService.ts)
+
+Sets or clears the Gemini API key in `localStorage`. Exported from `geminiService.ts` for use in custom settings UIs.
+
+```ts
+export const setApiKey = (key: string) => {
+  if (typeof window === "undefined") return;
+  if (key) window.localStorage.setItem("satquery.apikey", key);
+  else window.localStorage.removeItem("satquery.apikey");
+};
+```
+
+---
+
+## Configuration Precedence
+
+When multiple configuration sources are present, the following priority order applies (highest first):
+
+1. **`localStorage`** — values set via the Backend Settings panel or the programmatic helpers
+2. **`.env.local`** — build-time variables injected by Vite
+3. **`.env`** — project-level defaults (committed to the repository)
+
+<Note>
+  Because `VITE_*` variables are inlined at build time, changing `.env.local` requires restarting `npm run dev` (or triggering a new Vercel build) to take effect. `localStorage` values, on the other hand, apply instantly without any rebuild.
+</Note>

@@ -1,0 +1,255 @@
+---
+title: "Bounding Box Overlays — Visual Grounding on Images"
+sidebarTitle: "Bounding Boxes"
+description: "Color-coded bounding boxes are drawn on an HTML5 canvas overlay to spatially ground detected features, change regions, and evidence items in the response images."
+---
+
+Every image returned in an analysis response can carry a layer of bounding-box annotations that visually ground the model's findings. The annotations are drawn onto an HTML5 `<canvas>` element sized to match the source image, so boxes scale correctly regardless of how the image is displayed on screen. Clicking any annotated image opens a full-screen lightbox for closer inspection.
+
+## The BboxCanvas component
+
+`BboxCanvas` is the internal component responsible for rendering. It takes a source image URL, a list of `BoundingBox` objects, and optional metadata:
+
+```typescript
+function BboxCanvas({
+  url,
+  boxes,
+  label,
+  isLightbox,
+  onClick
+}: {
+  url: string;
+  boxes: BoundingBox[];
+  label?: string;
+  isLightbox?: boolean;
+  onClick?: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      ctx.drawImage(img, 0, 0);
+      // ...draw each box
+    };
+  }, [url, boxes]);
+  // ...
+}
+```
+
+The canvas is sized to the image's **natural** (intrinsic) pixel dimensions so that coordinate arithmetic is always done in the source image's own pixel space. CSS then scales the canvas to fit the available layout width.
+
+## The BoundingBox type
+
+```typescript
+export interface BoundingBox {
+  bbox: [number, number, number, number];
+  label?: string;
+  confidence?: number;
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `bbox` | `[x1, y1, x2, y2]` | Top-left and bottom-right corners of the box |
+| `label` | `string` | Text label drawn inside a filled badge above the box |
+| `confidence` | `number` | Model confidence for this specific detection (optional, not currently rendered) |
+
+## Normalized vs. absolute coordinates
+
+The rendering code detects which coordinate system is in use by inspecting all four values:
+
+```typescript
+const [x1, y1, x2, y2] = b.bbox;
+const norm = [x1, y1, x2, y2].every((v) => v >= 0 && v <= 1);
+
+const rx = norm ? x1 * img.naturalWidth  : x1;
+const ry = norm ? y1 * img.naturalHeight : y1;
+const rw = norm ? (x2 - x1) * img.naturalWidth  : x2 - x1;
+const rh = norm ? (y2 - y1) * img.naturalHeight : y2 - y1;
+```
+
+<CardGroup cols={2}>
+  <Card title="Normalized coordinates (0 – 1)" icon="percent">
+    All four values must be in the range `[0, 1]`. Coordinates are multiplied by the image's natural width/height to obtain pixel positions. Gemini Vision returns normalized coordinates by default.
+  </Card>
+  <Card title="Absolute pixel coordinates (> 1)" icon="ruler">
+    If any value exceeds 1, all four coordinates are treated as direct pixel offsets. Used when a downstream model returns pixel-space boxes.
+  </Card>
+</CardGroup>
+
+<Note>
+  The detection heuristic checks that **every** value is in `[0, 1]`, not just the first. A box like `[0.1, 0.2, 0.85, 0.95]` is normalized; a box like `[10, 20, 850, 950]` is absolute.
+</Note>
+
+## Color coding
+
+Box and label colours are determined by matching the label text against a set of change-related keywords:
+
+```typescript
+const isChange = /change|new|destroyed|flood|loss/i.test(b.label ?? "");
+ctx.strokeStyle = isChange ? "#CC5A37" : "#3D7E5D";
+```
+
+<Tabs>
+  <Tab title="Orange (#CC5A37) — change / loss labels">
+    Applied when the label matches `change`, `new`, `destroyed`, `flood`, or `loss` (case-insensitive). Used for features representing damage, inundation, or temporal differences between T1 and T2.
+
+    ```typescript
+    ctx.strokeStyle = "#CC5A37";
+    ctx.fillStyle = "rgba(204, 90, 55, 0.9)";  // label badge background
+    ```
+  </Tab>
+  <Tab title="Green (#3D7E5D) — all other features">
+    Applied to detections that do not match the change keyword list — vegetation, water bodies, road networks, buildings under normal conditions, etc.
+
+    ```typescript
+    ctx.strokeStyle = "#3D7E5D";
+    ctx.fillStyle = "rgba(61, 126, 93, 0.9)";  // label badge background
+    ```
+  </Tab>
+</Tabs>
+
+### Line width
+
+Stroke width scales with image resolution to remain visible regardless of source image size:
+
+```typescript
+ctx.lineWidth = Math.max(2, img.naturalWidth * 0.003);
+```
+
+A 1000 px wide image gets a 3 px stroke; a 256 px thumbnail gets the minimum 2 px stroke.
+
+## Label rendering
+
+When a `BoundingBox` has a `label`, a filled badge is drawn immediately above the top-left corner of the rectangle:
+
+```typescript
+if (b.label) {
+  ctx.fillStyle = isChange ? "rgba(204,90,55,0.9)" : "rgba(61,126,93,0.9)";
+  const fontSize = Math.max(12, img.naturalWidth * 0.018);
+  ctx.font = `bold ${fontSize}px system-ui`;
+  const tw = ctx.measureText(b.label).width;
+  ctx.fillRect(rx, ry - fontSize - 6, tw + 12, fontSize + 10);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(b.label, rx + 6, ry - 4);
+}
+```
+
+Font size is also resolution-relative (`1.8%` of image width, minimum 12 px) so labels remain legible on both thumbnails and full-resolution captures.
+
+## Image label badge
+
+An optional `label` prop on `BboxCanvas` renders an overlay badge in the top-left corner of the image (not tied to any specific box). This is used to identify temporal slots:
+
+```typescript
+{label && (
+  <div className="absolute top-2 left-2 z-10
+    bg-[#1F1E1B]/80 text-white text-[10px] font-bold px-2 py-1
+    rounded-md uppercase tracking-wider backdrop-blur-md shadow-sm">
+    {label}
+  </div>
+)}
+```
+
+Examples: `T1: Pre-Event`, `T2: Post-Event`, or an evidence item label when the chip is expanded.
+
+## Lightbox zoom-in
+
+Every `BboxCanvas` that receives an `onClick` prop is wrapped in a `cursor-zoom-in` container. Clicking opens a full-screen dark overlay that re-renders the same image and boxes at up to `85vw × 85vh`:
+
+```typescript
+// In the assistant bubble:
+<BboxCanvas
+  url={img.previewUrl}
+  boxes={r.grounding}
+  label="T1: Pre-Event"
+  onClick={() => onImageClick(img.previewUrl!, r.grounding!, "T1: Pre-Event")}
+/>
+
+// Lightbox state stored as:
+const [lightboxData, setLightboxData] = useState<{
+  url: string;
+  boxes: BoundingBox[];
+  label?: string;
+} | null>(null);
+```
+
+Inside the lightbox, `BboxCanvas` receives `isLightbox={true}` which changes its CSS max-size constraint from `max-h-80` to `max-h-[85vh] max-w-[85vw]`.
+
+<Tip>
+  Click anywhere on the dark overlay, or the `×` button in the top-right corner, to close the lightbox. The bounding boxes are redrawn at the larger canvas size automatically.
+</Tip>
+
+## Evidence chip expansion and matched grounding boxes
+
+Each evidence chip in the response can be clicked to expand an inline preview that highlights only the bounding boxes relevant to that evidence item:
+
+```typescript
+const matchingBox = r.grounding?.find((g: BoundingBox) =>
+  g.label?.toLowerCase().includes(label.toLowerCase()) ||
+  label.toLowerCase().includes(g.label?.toLowerCase() ?? "")
+);
+const highlightBoxes = matchingBox ? [matchingBox] : (r.grounding || []);
+```
+
+The matching logic uses bidirectional substring containment — a grounding box labelled `"flood area"` will match a chip labelled `"Flood"`, and vice versa. If no specific match is found, all grounding boxes are shown as a fallback.
+
+```typescript
+{previewImg?.previewUrl && (
+  <div
+    className="relative cursor-zoom-in"
+    onClick={() => onImageClick(previewImg.previewUrl!, highlightBoxes, label)}
+  >
+    {highlightBoxes.length > 0 ? (
+      <BboxCanvas url={previewImg.previewUrl} boxes={highlightBoxes} label={label} />
+    ) : (
+      <img src={previewImg.previewUrl} alt={label} className="w-full max-h-64 object-contain" />
+    )}
+  </div>
+)}
+```
+
+<Accordion title="Full BboxCanvas rendering flow">
+
+1. `img.onload` fires after the browser decodes the source image.
+2. The canvas is resized to `img.naturalWidth × img.naturalHeight`.
+3. The source image is drawn at (0, 0) as the background layer.
+4. Each `BoundingBox` in the `boxes` array is processed in order:
+   - Coordinate system is detected (normalized vs. absolute).
+   - Pixel-space `rx, ry, rw, rh` are computed.
+   - Stroke colour is chosen based on the label keyword test.
+   - `strokeRect` draws the box outline.
+   - If `label` is present, the badge background (`fillRect`) and text (`fillText`) are drawn above the top-left corner.
+5. The canvas is displayed via CSS `width: 100%; object-contain`.
+
+</Accordion>
+
+## AnalysisResponse grounding field
+
+Bounding boxes returned from Gemini Vision are stored in `AnalysisResponse.grounding`:
+
+```typescript
+export interface AnalysisResponse {
+  // ...
+  grounding?: BoundingBox[];
+  // ...
+}
+```
+
+Gemini is instructed to return normalized float coordinates in the range 0.0–1.0:
+
+```
+"grounding": [
+  { "bbox": [0.1, 0.25, 0.45, 0.6], "label": "Flooded area", "confidence": 88 },
+  { "bbox": [0.55, 0.1, 0.9, 0.45], "label": "Building cluster", "confidence": 92 }
+]
+```
+
+These values map directly onto the normalized coordinate path in `BboxCanvas`.

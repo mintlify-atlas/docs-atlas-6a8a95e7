@@ -1,0 +1,151 @@
+---
+title: "Deploy Earth Query Lens to Vercel"
+sidebarTitle: "Vercel"
+description: "Push your repo to GitHub, import it into Vercel, set one environment variable, and ship a production-ready satellite imagery analysis app."
+---
+
+Earth Query Lens is purpose-built for static hosting: there is no Express server, no database, and no edge functions to configure. Every analysis request goes directly from the user's browser to the Gemini API, so the entire deployment surface is a single, pre-built bundle of HTML, CSS, and JavaScript written to the `dist/` directory by Vite. Vercel is the fastest path from a local clone to a globally distributed URL.
+
+## Prerequisites
+
+Before you deploy, make sure you have:
+
+- A [Vercel account](https://vercel.com/signup) (free Hobby tier is sufficient)
+- A GitHub, GitLab, or Bitbucket account where the repository is hosted
+- A Gemini API key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+
+---
+
+## Deploying to Vercel
+
+<Steps>
+
+### Push the repository to GitHub
+
+If you are working from a local clone, create a new repository on GitHub and push your code. Vercel imports directly from your Git provider, so the repository must be reachable online.
+
+```bash
+git remote add origin https://github.com/YOUR_USERNAME/earth-query-lens.git
+git branch -M main
+git push -u origin main
+```
+
+### Import the project in Vercel
+
+1. Open the [Vercel dashboard](https://vercel.com/dashboard) and click **Add New… → Project**.
+2. Select **Import Git Repository** and authenticate with GitHub.
+3. Find **earth-query-lens** in the repository list and click **Import**.
+
+### Confirm the auto-detected build settings
+
+Vercel inspects the project and automatically identifies it as a Vite application. The build configuration in `vite.config.ts` sets the output directory to `dist`:
+
+```ts
+// vite.config.ts
+build: {
+  outDir: "dist",
+},
+```
+
+Vercel will pre-fill the following fields — verify they match before continuing:
+
+| Setting | Value |
+|---|---|
+| **Framework Preset** | Vite |
+| **Build Command** | `vite build` |
+| **Output Directory** | `dist` |
+| **Install Command** | `npm install` |
+
+<Note>
+  The `vercel.json` at the project root configures a catch-all rewrite so that
+  client-side routes managed by TanStack Router are served correctly:
+
+  ```json
+  {
+    "rewrites": [
+      { "source": "/(.*)", "destination": "/index.html" }
+    ]
+  }
+  ```
+
+  Vercel picks this file up automatically — you do not need to configure rewrites manually in the dashboard.
+</Note>
+
+### Add the environment variable
+
+Still on the Vercel import screen, expand the **Environment Variables** section and add the following before clicking **Deploy**:
+
+| Name | Value |
+|---|---|
+| `VITE_GEMINI_API_KEY` | Your key from [aistudio.google.com/apikey](https://aistudio.google.com/apikey) |
+
+<Warning>
+  The `VITE_` prefix causes Vite to embed this value directly into the compiled
+  JavaScript bundle. Anyone who downloads the bundle can read the key. Use a
+  key scoped to the Gemini API only, set spending limits in Google AI Studio,
+  and never reuse it for other Google Cloud services.
+</Warning>
+
+### Deploy
+
+Click **Deploy**. Vercel runs `npm install` followed by `vite build`, uploads the contents of `dist/` to its global CDN, and provides a `.vercel.app` URL within roughly 60 seconds.
+
+Every subsequent `git push` to the `main` branch triggers an automatic redeployment. Pull requests generate isolated **Preview Deployments** at unique URLs — useful for QA-testing a new analysis prompt or UI change before it reaches production.
+
+</Steps>
+
+---
+
+## Build scripts
+
+The `package.json` exposes several scripts relevant to building and previewing the app.
+
+<CodeGroup>
+
+```bash Production build
+# Compile and bundle the app for production.
+# Output is written to dist/.
+npm run build
+```
+
+```bash Local preview
+# Spin up a lightweight static server that
+# serves the contents of dist/ exactly as
+# Vercel will. Run npm run build first.
+npm run preview
+```
+
+```bash Development build
+# Build in development mode (no minification,
+# source maps enabled). Useful for debugging
+# bundle issues without running the dev server.
+npm run build:dev
+```
+
+</CodeGroup>
+
+<Tip>
+  Always run `npm run preview` before pushing to production. It serves the
+  actual `dist/` bundle through a local static server, so you will catch any
+  build-time environment variable issues — such as a missing `VITE_GEMINI_API_KEY` —
+  before they reach your live URL.
+</Tip>
+
+---
+
+## Zero-backend architecture
+
+Earth Query Lens processes every satellite image entirely in the browser. There are no server-side functions, no API routes, and no edge functions required — or even supported — by this project.
+
+- **Gemini Vision calls** go directly from the browser via `fetch` to `generativelanguage.googleapis.com`.
+- **GeoTIFF decoding** is performed client-side by `geotiff.js` without any server round-trip.
+- **Bounding-box overlays** are rendered with the native HTML5 `<canvas>` API.
+
+This means your Vercel project should remain on the **Static** deployment type. You do not need to enable Vercel Functions, Edge Functions, or any serverless compute. The result is lower latency (no cold-start overhead), zero compute cost on Vercel, and a dramatically smaller attack surface.
+
+<Note>
+  If you later opt in to the optional self-hosted SatQuery Python backend, that
+  service runs entirely outside of Vercel. See the
+  [Environment Variables](/deployment/environment-variables) reference for how
+  to point the client at your backend URL.
+</Note>

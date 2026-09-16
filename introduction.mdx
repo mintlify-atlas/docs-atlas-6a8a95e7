@@ -1,0 +1,86 @@
+---
+title: "Earth Query Lens: Satellite Imagery Analysis AI"
+sidebarTitle: "Introduction"
+description: "Earth Query Lens is a fully client-side multimodal AI platform that analyzes satellite imagery using Gemini Vision—no server required."
+---
+
+Earth Query Lens is a multimodal AI interface that lets you interrogate satellite imagery with plain-language questions, detect land-cover change between two time periods, and receive structured geospatial findings—all directly from your browser. Unlike conventional remote-sensing pipelines, Earth Query Lens ships no backend server: every image is decoded, converted, and reasoned over entirely on the client, with inference delegated to Gemini Vision through a direct API call. The result is a zero-infrastructure tool that can be cloned, configured with a single environment variable, and deployed to Vercel in minutes.
+
+## What Is Earth Query Lens?
+
+Earth Query Lens is built on React 19, Vite 5, and TanStack Router. It uses `geotiff.js` to decode GeoTIFF and multi-band raster files inside the browser's `<canvas>` context, normalizes them to PNG, and forwards the pixel data to Google's Gemini Vision API. Responses arrive as structured JSON—covering detected features, bounding-box groundings, change-detection results, and confidence scores—which the UI renders as an interactive, ChatGPT-style conversation.
+
+## Zero-Backend Architecture
+
+Traditional satellite-analysis platforms require a Python backend, a GDAL installation, and a GPU server to run inference. Earth Query Lens eliminates every one of those requirements:
+
+- **In-browser raster decoding** — `geotiff.js` reads `.tif` / `.tiff` files and performs auto-contrast normalization directly in the browser.
+- **Direct Gemini API calls** — `fetch` requests are made from the browser to `https://generativelanguage.googleapis.com`; no proxy or server is involved.
+- **LocalStorage credential management** — your API key is stored under `satquery.apikey` in `localStorage` and never leaves the device.
+- **Vercel-ready static build** — the Vite build outputs a fully static `dist/` folder that any CDN can serve.
+
+<Note>
+  Because all processing happens on the client, your satellite images are sent directly to the Gemini API. Review [Google's data-use policy](https://ai.google.dev/gemini-api/terms) before uploading sensitive imagery.
+</Note>
+
+## Supported Image Formats
+
+Earth Query Lens accepts a broad range of raster and imagery formats:
+
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| GeoTIFF | `.tif`, `.tiff` | Full multi-band support; auto-contrast normalisation |
+| TIFF | `.tif`, `.tiff` | Standard 8-bit and 16-bit float rasters |
+| SAR imagery | `.tif`, `.tiff` | Single-band SAR decoded via grayscale mapping |
+| BigEarth patches | `.tif`, `.tiff` | Multi-spectral patches as used in BigEarthNet |
+| PNG | `.png` | Passed through directly |
+| JPEG | `.jpg`, `.jpeg` | Passed through directly |
+| JPEG 2000 | `.jp2` | Treated as standard image |
+
+For GeoTIFF inputs, the service automatically reads up to three raster bands and maps them to the R/G/B channels before sending the image to Gemini, so multi-band composites are rendered correctly without any external tooling.
+
+## Gemini Vision Integration
+
+The core analysis engine is powered by Google Gemini Vision. `geminiService.ts` maintains an ordered fallback list of model identifiers and tries each one in sequence until a successful response is received:
+
+```ts
+const modelsToTry = [
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-3.5-flash-lite",
+  "gemini-3.8-flash",
+];
+```
+
+Gemini is prompted with the `Sentinel-SAR-Analyzer` system persona and instructed to return a strict JSON response containing an `answer`, `confidence`, `grounding` bounding boxes (normalised 0–1 float coordinates), `change` detection results, and `evidence` items. This structured output feeds directly into the UI's overlay renderer.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Clone the repo, add your Gemini API key, and run your first satellite image analysis in under five minutes.
+  </Card>
+  <Card title="Chat Interface" icon="message-dots" href="/features/chat-interface">
+    A scrolling, ChatGPT-style conversation UI with a persistent bottom input bar, markdown rendering, and per-session history.
+  </Card>
+  <Card title="Change Detection" icon="arrows-left-right" href="/features/change-detection">
+    Upload a Pre-event and Post-event image pair to trigger a bi-temporal Evidence Fusion workflow and compute change maps.
+  </Card>
+  <Card title="SatQuery Types Reference" icon="code" href="/reference/satquery-types">
+    Complete TypeScript interface reference for `AnalysisResponse`, `BoundingBox`, `ExecutionTrace`, and all related types.
+  </Card>
+</CardGroup>
+
+## Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| UI Framework | React 19 + Vite 5 |
+| Routing | TanStack Router / TanStack Start |
+| Styling | Tailwind CSS v4 + Radix UI |
+| Raster Processing | `geotiff.js` (in-browser) |
+| LLM Engine | Google Gemini Vision API |
+| 3-D Globe | CesiumJS + Resium |
+| Deployment | Vercel (zero-config) |

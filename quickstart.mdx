@@ -1,47 +1,154 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Quickstart: Run Your First Satellite Analysis"
+sidebarTitle: "Quickstart"
+description: "Clone Earth Query Lens, configure your Gemini API key, start the dev server, and analyze your first satellite image in five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+Earth Query Lens requires only Node.js, a package manager, and a free Google AI Studio API key to run locally. Because the entire analysis pipeline executes in the browser, there is no Python environment to configure, no database to provision, and no GPU required. Follow the steps below to go from zero to a working analysis session.
 
 ## Prerequisites
 
-Before you begin, you must have:
+- **Node.js 18+** — check with `node -v`
+- **npm** (bundled with Node) — check with `npm -v`
+- **A Gemini API key** — get one free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
 
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+---
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Clone the repository">
+    Clone the Earth Query Lens repository from GitHub and move into the project directory.
 
     ```bash
-    npm install your-package
+    git clone https://github.com/YOUR_USERNAME/earth-query-lens.git
+    cd earth-query-lens
     ```
+
+    <Note>
+      Replace `YOUR_USERNAME` with the actual GitHub account that hosts your fork or the upstream repository slug.
+    </Note>
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Install dependencies">
+    Install all Node dependencies declared in `package.json`. The project uses a `rolldown` override, so npm is the recommended package manager.
 
     ```bash
-    your-cli init
+    npm install
     ```
+
+    This pulls in React 19, Vite 5, TanStack Router, `geotiff.js`, CesiumJS, and all Radix UI primitives.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Create your environment file">
+    Earth Query Lens ships an `.env.example` that documents every supported variable. Copy it to `.env.local` (which Vite reads automatically and which is excluded from version control) and fill in your key.
+
+    <CodeGroup>
+
+    ```bash Terminal
+    cp .env.example .env.local
+    ```
+
+    ```env .env.local
+    # Copy this to .env.local and fill in your key
+    # Get a free key at: https://aistudio.google.com/apikey
+    VITE_GEMINI_API_KEY=AIzaSy_YOUR_KEY_HERE
+    ```
+
+    </CodeGroup>
+
+    Replace `AIzaSy_YOUR_KEY_HERE` with the API key you copied from Google AI Studio.
+
+    <Tip>
+      You don't have to edit any files at all if you prefer a UI-first workflow. Open the app in the browser, click the **Settings** cog in the top-right corner, and paste your Gemini API key into the **Gemini API Key** field of the Backend Settings panel. The key is persisted to `localStorage` under `satquery.apikey` and takes effect immediately without a server restart. See [Configuration](/configuration) for full details.
+    </Tip>
+  </Step>
+
+  <Step title="Start the development server">
+    Run the `dev` script defined in `package.json` to launch Vite's hot-module-replacement dev server.
 
     ```bash
-    your-cli start
+    npm run dev
     ```
+
+    Vite will print a local URL (typically `http://localhost:5173`). Open it in your browser.
+
+    The full set of available scripts is:
+
+    | Script | Command | Purpose |
+    |--------|---------|---------|
+    | `dev` | `vite` | Start HMR dev server |
+    | `build` | `vite build` | Production bundle to `dist/` |
+    | `build:dev` | `vite build --mode development` | Development bundle |
+    | `preview` | `vite preview` | Serve the production build locally |
+    | `lint` | `eslint .` | Run ESLint across the project |
+    | `format` | `prettier --write .` | Format all files with Prettier |
+  </Step>
+
+  <Step title="Upload an image and run your first analysis">
+    With the app open in your browser:
+
+    1. Click the **Upload Image** button in the chat input area.
+    2. Select any satellite image from your filesystem — GeoTIFF, TIFF, PNG, or JPEG all work.
+    3. Type a query in the text field, for example:
+
+       ```
+       Identify the dominant land-cover classes visible in this scene.
+       ```
+
+    4. Press **Enter** or click **Send**.
+
+    Earth Query Lens will decode the image, convert it to PNG if needed, and call the Gemini API. Within a few seconds you'll see a structured response card containing:
+
+    - A natural-language **answer** with your findings
+    - A **confidence** percentage
+    - **Evidence** items listing specific visual observations
+    - **Bounding box** overlays highlighting detected features on the image
+    - An **Execution Trace** panel showing the analysis steps
+
+    <Note>
+      If the app shows an API key error, confirm that `VITE_GEMINI_API_KEY` is set in `.env.local` **or** that you have saved a key via the Backend Settings panel. The environment variable takes effect only after restarting the dev server.
+    </Note>
+  </Step>
+
+  <Step title="Try bi-temporal change detection (optional)">
+    To run a change-detection analysis, upload **two images** — one pre-event and one post-event:
+
+    1. Click **Upload Image** and select your baseline (pre-event) image.
+    2. Click **Upload Image** again and add your second (post-event) image.
+    3. Type a change-detection query, for example:
+
+       ```
+       What land-cover changes occurred between these two images?
+       ```
+
+    4. Send the message.
+
+    When two images are present, Earth Query Lens automatically activates the Evidence Fusion workflow: Agent 1 extracts features from the pre-event scene, Agent 2 processes the post-event scene, and Agent 3 fuses the evidence to compute a change description and a `change_detected` flag.
+  </Step>
+
+</Steps>
+
+---
+
+## Deploying to Vercel
+
+Earth Query Lens is optimised for zero-configuration Vercel deployment.
+
+<Steps>
+  <Step title="Push to GitHub">
+    Commit your changes and push the repository to a GitHub account accessible to Vercel.
+  </Step>
+  <Step title="Import in Vercel">
+    Go to [vercel.com/new](https://vercel.com/new), import your repository, and allow Vercel to auto-detect the Vite build settings.
+  </Step>
+  <Step title="Add environment variable">
+    In the Vercel project settings under **Environment Variables**, add `VITE_GEMINI_API_KEY` with your key.
+  </Step>
+  <Step title="Deploy">
+    Click **Deploy**. Vercel builds the static bundle from `dist/` and publishes it to a global CDN.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+<Warning>
+  `VITE_*` environment variables are embedded into the client-side JavaScript bundle at build time. Do not store sensitive secrets other than the Gemini API key in `.env.local`, and be aware that the key will be visible in your deployed bundle's source.
+</Warning>

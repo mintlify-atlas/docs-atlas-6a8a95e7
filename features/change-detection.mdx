@@ -1,0 +1,223 @@
+---
+title: "Change Detection — Bi-Temporal Evidence Fusion"
+sidebarTitle: "Change Detection"
+description: "Upload a Pre-event and Post-event image pair to trigger multi-agent evidence fusion orchestration and receive a structured ChangeResult with affected area metrics."
+---
+
+Attaching two images to a single query activates Earth Query Lens's bi-temporal analysis mode. Instead of a single Gemini call, the system runs a staged evidence-fusion orchestration that extracts features from each image independently before cross-correlating them for change detection. The result surfaces a structured summary card, an estimated affected-area percentage, and per-region bounding boxes.
+
+## Triggering bi-temporal mode
+
+Change detection is activated automatically whenever exactly **two** images are present in the submission — either newly attached or carried forward via context reuse. The orchestration entry point is `runOrchestration`:
+
+```typescript
+export async function runOrchestration(
+  query: string,
+  files: File[],
+  onProgress: (msg: string) => void,
+  signal?: AbortSignal
+): Promise<AnalysisResponse> {
+  if (files.length < 2) {
+    onProgress("Analyzing single image...");
+    return analyzeWithGemini(query, files, signal);
+  }
+  // ...bi-temporal path
+}
+```
+
+If fewer than two files are provided, `runOrchestration` falls through to a standard single-image `analyzeWithGemini` call.
+
+## Multi-step evidence fusion orchestration
+
+When two files are present, the orchestration proceeds through three labelled stages with simulated inter-step delays to reflect real-world pipeline latency:
+
+<Steps>
+  <Step title="Initialize Evidence Fusion Agents">
+    Progress callback fires: *"Initializing Evidence Fusion Agents…"*. A 1-second pause represents cluster bootstrapping.
+  </Step>
+  <Step title="Pre-event feature extraction (Agent 1)">
+    Progress: *"Agent 1: Extracting features from Pre-event image…"*. A 1.5-second pause simulates T1 tile processing.
+  </Step>
+  <Step title="Post-event feature extraction (Agent 2)">
+    Progress: *"Agent 2: Extracting features from Post-event image…"*. A further 1.5-second pause simulates T2 tile processing.
+  </Step>
+  <Step title="Evidence fusion and change detection (Agent 3)">
+    Progress: *"Agent 3: Fusing evidence and computing change detection…"*. The call to `analyzeWithGemini` is made here, with the original query appended by the instruction: *"Please focus heavily on change detection and evidence fusion between these two images."*
+  </Step>
+</Steps>
+
+### Execution trace override
+
+After `analyzeWithGemini` returns, `runOrchestration` replaces the default execution trace with a bi-temporal-specific one:
+
+```typescript
+res.execution_trace = {
+  query: query,
+  detected_task: "Bi-temporal Evidence Fusion",
+  model: "Sentinel-Fusion-Cluster",
+  steps: [
+    { name: "Pre-event Extraction",  status: "done", detail: "Extracted baseline features."           },
+    { name: "Post-event Extraction", status: "done", detail: "Extracted current features."            },
+    { name: "Evidence Fusion",       status: "done", detail: "Synthesized cross-temporal discrepancies." }
+  ]
+};
+```
+
+## The ChangeResult interface
+
+The `change` field of `AnalysisResponse` is typed as `ChangeResult`:
+
+```typescript
+export interface ChangeResult {
+  change_detected?: boolean;
+  changed_area_percent?: number;
+  description?: string;
+  change_map_url?: string;
+  regions?: BoundingBox[];
+  confidence?: number;
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `change_detected` | `boolean` | `true` if Gemini identifies a meaningful difference between T1 and T2 |
+| `changed_area_percent` | `number` | Estimated percentage of the image extent that changed |
+| `description` | `string` | Free-text narrative of what changed (e.g. flood extent, building loss) |
+| `change_map_url` | `string` | Optional URL to an external change-map raster (not currently populated) |
+| `regions` | `BoundingBox[]` | Per-region bounding boxes for localised change areas |
+| `confidence` | `number` | Model confidence in the change determination (0–100 or 0–1 scale) |
+
+## How the change card is rendered
+
+The change card appears directly below the main answer text in the assistant bubble. Its colour scheme indicates whether change was detected:
+
+<Tabs>
+  <Tab title="Change detected (orange)">
+    ```typescript
+    // border-[#CC5A37]/30 bg-[#CC5A37]/10 text-[#B45309]
+    <div className={`flex items-start gap-3 rounded-xl border p-4 text-sm font-semibold
+      border-[#CC5A37]/30 bg-[#CC5A37]/10 text-[#B45309]`}>
+      <Layers className="size-4 shrink-0 mt-0.5" />
+      <div>
+        <p className="text-base">⚠ Significant Change Detected</p>
+        {r.change.description && (
+          <p className="font-normal text-sm mt-1.5 opacity-90 text-[#1F1E1B]">
+            {r.change.description}
+          </p>
+        )}
+        {typeof r.change.changed_area_percent === "number" && (
+          <p className="font-mono text-xs opacity-80 mt-2 font-bold">
+            Estimated Affected Area: {r.change.changed_area_percent.toFixed(1)}%
+          </p>
+        )}
+      </div>
+    </div>
+    ```
+  </Tab>
+  <Tab title="No change (green)">
+    ```typescript
+    // border-[#3D7E5D]/30 bg-[#3D7E5D]/10 text-[#3D7E5D]
+    <div className={`flex items-start gap-3 rounded-xl border p-4 text-sm font-semibold
+      border-[#3D7E5D]/30 bg-[#3D7E5D]/10 text-[#3D7E5D]`}>
+      <Layers className="size-4 shrink-0 mt-0.5" />
+      <div>
+        <p className="text-base">✓ No Significant Change</p>
+        {/* description and area percent rendered identically when present */}
+      </div>
+    </div>
+    ```
+  </Tab>
+</Tabs>
+
+<CardGroup cols={2}>
+  <Card title="⚠ Significant Change Detected" icon="triangle-exclamation">
+    Orange border and background. Rendered when `change_detected === true`. Displays description text and `changed_area_percent` formatted to one decimal place.
+  </Card>
+  <Card title="✓ No Significant Change" icon="circle-check">
+    Green border and background. Rendered when `change_detected === false`. Still shows description and area percent if provided.
+  </Card>
+</CardGroup>
+
+## ExecutionTrace steps panel
+
+Every assistant response includes a collapsible **Execution Trace** toggle below the change card and evidence chips. Clicking it expands a dark monospace panel listing each pipeline step:
+
+```typescript
+{r.execution_trace && r.execution_trace.steps && (
+  <>
+    <button onClick={() => setTraceOpen(o => !o)}
+      className="flex items-center gap-1.5 text-xs ...">
+      {traceOpen ? <ChevronDown /> : <ChevronRight />}
+      <BarChart3 /> Execution Trace
+    </button>
+    {traceOpen && (
+      <div className="rounded-xl bg-slate-900 text-slate-200 p-4 text-xs font-mono space-y-1.5">
+        <p><span className="text-slate-500">task:</span> {r.execution_trace.detected_task}</p>
+        <div className="mt-2 space-y-1">
+          {r.execution_trace.steps.map((s, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Check className="size-3 text-emerald-400 shrink-0" />
+              <span className="text-slate-300">{s.name}</span>
+              {s.detail && <span className="text-slate-500">— {s.detail}</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+  </>
+)}
+```
+
+The `ExecutionStep` type used by each row:
+
+```typescript
+export interface ExecutionStep {
+  name: string;
+  status?: "pending" | "running" | "done" | "failed";
+  detail?: string;
+}
+```
+
+<Accordion title="Bi-temporal trace example output">
+
+```
+task: Bi-temporal Evidence Fusion
+
+✓ Pre-event Extraction  — Extracted baseline features.
+✓ Post-event Extraction — Extracted current features.
+✓ Evidence Fusion       — Synthesized cross-temporal discrepancies.
+```
+
+</Accordion>
+
+<Warning>
+  `changed_area_percent` is a Gemini-generated estimate based on visual comparison, not a pixel-precise calculation. Treat it as an order-of-magnitude indicator rather than a surveying-grade measurement.
+</Warning>
+
+## T1/T2 image overlays with grounding boxes
+
+When two images are submitted, the response bubble renders them side-by-side in a two-column grid. Grounding bounding boxes from `AnalysisResponse.grounding` are drawn over each image using the `BboxCanvas` component:
+
+```typescript
+{idx === 0 && img.previewUrl ? (
+  r.grounding && r.grounding.length > 0 ? (
+    <BboxCanvas
+      url={img.previewUrl}
+      boxes={r.grounding}
+      label="T1: Pre-Event"
+      onClick={() => onImageClick(img.previewUrl!, r.grounding!, "T1: Pre-Event")}
+    />
+  ) : /* plain img with T1 label badge */
+) : idx === 1 && img.previewUrl ? (
+  r.grounding && r.grounding.length > 0 ? (
+    <BboxCanvas
+      url={img.previewUrl}
+      boxes={r.grounding}
+      label="T2: Post-Event"
+      onClick={() => onImageClick(img.previewUrl!, r.grounding!, "T2: Post-Event")}
+    />
+  ) : /* plain img with T2 label badge */
+)}
+```
+
+See [Bounding Box Overlays](/features/bounding-box-overlays) for full details on how boxes are drawn and colour-coded.

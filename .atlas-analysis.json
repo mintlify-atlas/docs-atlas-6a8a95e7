@@ -1,0 +1,97 @@
+{
+  "projectType": "saas",
+  "projectName": "Earth Query Lens",
+  "projectDescription": "A fully client-side, multimodal satellite imagery analysis platform powered by Gemini Vision that enables conversational querying, bi-temporal change detection, and bounding-box grounding over GeoTIFF, SAR, and optical imagery.",
+  "theme": "almond",
+  "primaryColor": "#cc5a37",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/chat-interface",
+              "features/image-upload",
+              "features/change-detection",
+              "features/map-selector",
+              "features/bounding-box-overlays"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/vercel",
+              "deployment/environment-variables"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "SatQuery Client",
+            "pages": [
+              "reference/satquery-types",
+              "reference/satquery-functions"
+            ]
+          },
+          {
+            "group": "Gemini Service",
+            "pages": [
+              "reference/gemini-service",
+              "reference/geochat-service"
+            ]
+          },
+          {
+            "group": "Components",
+            "pages": [
+              "reference/backend-settings",
+              "reference/map-selector-component",
+              "reference/results-dashboard"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Conversational ChatGPT-style interface for satellite imagery analysis",
+    "Bi-temporal change detection by uploading Pre-event and Post-event image pairs",
+    "In-browser GeoTIFF and SAR image decoding using geotiff.js with auto-contrast",
+    "Bounding box canvas overlays for detected features (water bodies, urban areas, etc.)",
+    "Interactive CesiumJS globe map for selecting geographic regions and sending captures to chat",
+    "Zero-backend architecture — all inference runs via direct Gemini API calls from the browser",
+    "Multi-model fallback chain across multiple Gemini model versions",
+    "Persistent multi-session chat history stored with localforage",
+    "Optional GeoChat Gradio backend integration for specialist geospatial models",
+    "Drag-and-drop image upload supporting GeoTIFF, TIFF, PNG, JPEG, BigEarth, JP2, SAR"
+  ],
+  "publicApiSurface": [
+    "analyze(input: { query, files, signal }) → AnalysisResponse",
+    "checkHealth() → boolean",
+    "getApiBaseUrl() → string",
+    "setApiBaseUrl(url: string) → void",
+    "humanizeError(err: unknown) → string",
+    "formatConfidence(value?: number) → string | null",
+    "confidenceRatio(value?: number) → number | null",
+    "analyzeWithGemini(query, files, signal?) → AnalysisResponse",
+    "analyzeWithGeoChat(query, files) → AnalysisResponse",
+    "runOrchestration(query, files, onProgress, signal?) → AnalysisResponse",
+    "generateChatTitle(query, apiKey) → string",
+    "setApiKey(key: string) → void",
+    "ImageMetadata, BoundingBox, EvidenceItem, ExecutionStep, ExecutionTrace, ChangeResult, OpticalSarResult, AnalysisResponse, SatQueryError (TypeScript types)"
+  ]
+}

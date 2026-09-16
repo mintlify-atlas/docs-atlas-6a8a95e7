@@ -1,0 +1,173 @@
+---
+title: "Chat Interface — Conversational Satellite Analysis"
+sidebarTitle: "Chat Interface"
+description: "Submit natural-language queries against satellite imagery, manage multi-session history, and follow up across turns without re-uploading images."
+---
+
+Earth Query Lens centers its workflow on a persistent conversational interface. Every analysis starts as a plain text question — you type, attach imagery, and receive structured results without leaving the browser. Sessions are stored locally via `localforage`, so your history survives page refreshes and is never transmitted to any server beyond the Gemini Vision API call itself.
+
+## Starting a query
+
+When the chat area is empty, four built-in suggestion prompts appear on the welcome screen. Click any of them to pre-fill the input bar, then attach an image and press **Send** (or hit `Enter`).
+
+<CardGroup cols={2}>
+  <Card title="🛰️ Describe this scene" icon="satellite">
+    General scene captioning — land cover, terrain type, visible infrastructure.
+  </Card>
+  <Card title="💧 Detect all water bodies" icon="droplet">
+    Locates rivers, lakes, reservoirs, and flooded areas in the image.
+  </Card>
+  <Card title="🔄 What changed between these images?" icon="arrows-rotate">
+    Triggers bi-temporal change detection when two images are attached.
+  </Card>
+  <Card title="🏙️ Identify urban structures" icon="building">
+    Maps buildings, roads, and built-up areas with bounding-box grounding.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Suggestion prompts are shortcuts only — the text they insert is fully editable before you submit.
+</Tip>
+
+## Submitting a query
+
+The input bar lives at the bottom of the chat view. It auto-grows up to 200 px as you type and supports `Shift+Enter` for newlines.
+
+<Steps>
+  <Step title="Attach images (optional)">
+    Click the **paperclip** icon or drag files onto the page. Up to two images are accepted per submission. See [Image Upload](/features/image-upload) for supported formats.
+  </Step>
+  <Step title="Type your question">
+    Enter any natural-language question about the imagery. Leave the text box empty to re-run analysis on previously uploaded images.
+  </Step>
+  <Step title="Press Send or Enter">
+    The button becomes a spinning `Loader2` icon while analysis runs. A progress banner appears above the input bar showing the current pipeline stage (e.g. *"Agent 2: Extracting features from Post-event image…"*).
+  </Step>
+  <Step title="Read the structured response">
+    The assistant bubble renders an **Answer card**, optional **Evidence chips**, a **Change detection card** (for bi-temporal queries), image overlays with bounding boxes, and a collapsible **Execution Trace** panel.
+  </Step>
+</Steps>
+
+### Progress text during analysis
+
+While a request is in flight the UI displays a live status string sourced from the orchestration's `onProgress` callback:
+
+```typescript
+res = await runOrchestration(
+  query.trim() || "Analyze this context.",
+  filesToAnalyze,
+  (m) => setProgressText(m)   // e.g. "Fusing evidence and computing change detection..."
+);
+```
+
+The displayed string updates several times during a bi-temporal run:
+
+| Stage | Banner text |
+|---|---|
+| Startup | `Initializing Evidence Fusion Agents…` |
+| Image 1 | `Agent 1: Extracting features from Pre-event image…` |
+| Image 2 | `Agent 2: Extracting features from Post-event image…` |
+| Fusion | `Agent 3: Fusing evidence and computing change detection…` |
+| Single image | `Analyzing single image…` |
+
+## Multi-session sidebar
+
+All previous conversations appear in the left sidebar under the **Chats** heading. Sessions are sorted by most-recently-updated timestamp.
+
+```typescript
+export interface ChatSession {
+  id: string;
+  title: string;
+  updatedAt: number;
+}
+```
+
+<Steps>
+  <Step title="Create a new chat">
+    Click **New Chat** at the bottom of the sidebar. A fresh session ID is generated immediately: `session-${Date.now()}`. The session is not persisted to `localforage` until the first message is submitted.
+  </Step>
+  <Step title="Switch chats">
+    Click any session row. The message list for that session is loaded from `localforage` under the key `satquery.session_<id>` and object URLs are reconstructed from the stored `File` objects.
+  </Step>
+  <Step title="Delete a chat">
+    Hover a session row to reveal the `X` button. Clicking it removes the entry from `satquery.sessions` and deletes `satquery.session_<id>` from storage. If the deleted session was active, the UI switches to the next available session (or creates a blank one if none remain).
+  </Step>
+</Steps>
+
+<Note>
+  On mobile, the sidebar is hidden by default. Tap the **☰** menu icon in the navbar to open it as a modal overlay.
+</Note>
+
+## Persistent history via localforage
+
+Chat history is stored entirely in the browser using `localforage`, which automatically picks `IndexedDB` → `WebSQL` → `localStorage` based on availability.
+
+| Key | Contents |
+|---|---|
+| `satquery.sessions` | `ChatSession[]` — the list of all sessions |
+| `satquery.session_<id>` | `ChatMessage[]` — messages for a single session |
+
+**Serialization note:** `previewUrl` object URLs are stripped to `null` before saving (they are non-serializable blob references). When a session is re-loaded, fresh object URLs are reconstructed via `URL.createObjectURL(img.file)`.
+
+```typescript
+// Saving — strip live object URLs
+const serialized = messages.map(m => {
+  const newM = { ...m };
+  if (newM.images) {
+    newM.images = newM.images.map(img => ({ ...img, previewUrl: null }));
+  }
+  return newM;
+});
+localforage.setItem(`satquery.session_${currentSessionId}`, serialized);
+
+// Restoring — re-create object URLs from the stored File
+const restored = saved.map(m => ({
+  ...m,
+  images: m.images?.map(img => ({
+    ...img,
+    previewUrl: img.file ? URL.createObjectURL(img.file as File) : null
+  }))
+}));
+```
+
+## Follow-up queries and context image reuse
+
+You do not need to re-attach images for every follow-up question. `getContextImages` walks the message history backwards to find the most recent user message that contained uploaded images:
+
+```typescript
+const getContextImages = () => {
+  if (pendingImages.length > 0) return pendingImages;
+  // Look backward in history for the last uploaded images
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg && msg.images && msg.images.length > 0) {
+      return msg.images || [];
+    }
+  }
+  return [];
+};
+```
+
+The returned images are then passed directly to the analysis function alongside the new query text, giving Gemini full visual context without any additional upload step.
+
+<Warning>
+  Because object URLs are re-created on session load, follow-up context only works within the same browser session or if the original `File` objects are still present in memory. After a hard page reload, re-attach the images to resume analysis.
+</Warning>
+
+## Auto-generated session titles
+
+When a new session receives its first message, `generateChatTitle` is called asynchronously to replace the default *"New Chat…"* placeholder with a concise 3–4 word description:
+
+```typescript
+generateChatTitle(query.trim() || "Analyze image", apiKey).then(t => {
+  setSessions(prev => {
+    const updated = prev.map(s =>
+      s.id === currentSessionId ? { ...s, title: t } : s
+    );
+    localforage.setItem("satquery.sessions", updated);
+    return updated;
+  });
+});
+```
+
+The title generation makes a separate lightweight Gemini API call and does not block the main analysis.

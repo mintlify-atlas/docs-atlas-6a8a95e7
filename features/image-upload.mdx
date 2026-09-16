@@ -1,0 +1,204 @@
+---
+title: "Image Upload — Formats, Labels & GeoTIFF Decoding"
+sidebarTitle: "Image Upload"
+description: "Attach up to two satellite images via drag-and-drop or file picker. GeoTIFF files are decoded in-browser with auto-contrast normalization before analysis."
+---
+
+Earth Query Lens accepts satellite imagery directly in the browser — no server-side storage, no pre-processing pipeline. Files are decoded, normalized, and converted to base-64 inline data entirely on the client before being sent to Gemini Vision. This keeps raw imagery private and eliminates upload latency for large GeoTIFF files.
+
+## Accepted formats
+
+The file picker and drag-and-drop handler share the same extension filter:
+
+```typescript
+const EXT = /\.(tif|tiff|geotiff|png|jpg|jpeg|jp2|img)$/i;
+```
+
+| Format | Notes |
+|---|---|
+| `.tif` / `.tiff` / `.geotiff` | Decoded in-browser via `geotiff.js`; supports 1-band SAR, multi-band optical, and 16-bit float |
+| `.png` / `.jpg` / `.jpeg` | Passed directly to Gemini as base-64; thumbnail preview generated immediately |
+| `.jp2` | JPEG 2000 — sent as raw base-64 without client-side rasterization |
+| `.img` | ERDAS Imagine raster — sent as raw base-64 |
+
+<Note>
+  Files that do not match the extension filter are silently ignored. No error message is shown for rejected file types — check the extension if an image does not appear in the upload queue.
+</Note>
+
+## Drag-and-drop
+
+Dragging any supported file onto the browser window activates a full-screen drop target overlay. The overlay only activates when the app is in **Chat** mode; dragging while in **Map** mode is a no-op.
+
+```typescript
+const handleDragOver = (e: React.DragEvent) => {
+  e.preventDefault();
+  if (mode === "chat") setIsDragging(true);
+};
+
+const handleDrop = (e: React.DragEvent) => {
+  e.preventDefault();
+  setIsDragging(false);
+  if (mode === "chat" && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+    addImages(e.dataTransfer.files);
+  }
+};
+```
+
+While dragging, the UI renders a centered card with a dashed orange border and the message **"Drop images to upload"**.
+
+## File picker (paperclip button)
+
+Click the **paperclip** icon in the input bar to open the native file browser. The `<input>` element is hidden and programmatically triggered:
+
+```typescript
+<input
+  ref={fileInputRef}
+  type="file"
+  multiple
+  accept=".tif,.tiff,.geotiff,.png,.jpg,.jpeg,.jp2,.img"
+  className="hidden"
+  onChange={(e) => { addImages(e.target.files); e.target.value = ""; }}
+/>
+```
+
+The `accept` attribute surfaces only compatible files in the OS file picker. The input value is cleared after each selection so the same file can be re-attached in a later submission.
+
+<Tip>
+  The paperclip button is disabled (`opacity-30`) once two images are already queued. Remove one image to re-enable it.
+</Tip>
+
+## Maximum two images per submission
+
+`addImages` appends new files to the pending queue and hard-caps the result at two items:
+
+```typescript
+const addImages = (files: FileList | null) => {
+  if (!files) return;
+  const EXT = /\.(tif|tiff|geotiff|png|jpg|jpeg|jp2|img)$/i;
+  const accepted: UploadedImage[] = [];
+  Array.from(files).forEach((file) => {
+    if (!EXT.test(file.name)) return;
+    const prev = /\.(png|jpg|jpeg)$/i.test(file.name);
+    accepted.push({
+      id: `${file.name}-${Math.random().toString(36).slice(2)}`,
+      file,
+      previewUrl: prev ? URL.createObjectURL(file) : null
+    });
+  });
+  setPendingImages((p) => [...p, ...accepted].slice(0, 2));
+};
+```
+
+## T1/T2 Pre/Post-event labeling
+
+When exactly two images are queued, the upload chips switch from a plain **IMG** badge to temporal labels:
+
+```typescript
+{pendingImages.length > 1
+  ? (idx === 0 ? "T1: Pre-event" : "T2: Post-event")
+  : "IMG"}
+```
+
+A **Bi-temporal mode** indicator (with a `Layers` icon) also appears next to the chips. These labels are propagated through to the Gemini prompt and the response image overlays, where they render as `T1: Pre-Event` and `T2: Post-Event` banner badges.
+
+<CardGroup cols={2}>
+  <Card title="T1: Pre-Event (first image)" icon="clock-rotate-left">
+    Represents the baseline or historical observation. Passed to Gemini as `PRE-EVENT BASELINE (T1)`.
+  </Card>
+  <Card title="T2: Post-Event (second image)" icon="clock">
+    Represents the current or post-disaster observation. Passed to Gemini as `POST-EVENT OBSERVATION (T2)`.
+  </Card>
+</CardGroup>
+
+## In-browser GeoTIFF decoding
+
+Any file whose name ends in `.tif` or `.tiff` is decoded client-side by `geotiff.js` via the `convertTiffToPngBase64` function before being sent to Gemini:
+
+```typescript
+async function convertTiffToPngBase64(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const tiff = await GeoTIFF.fromArrayBuffer(arrayBuffer);
+  const image = await tiff.getImage();
+  const width = image.getWidth();
+  const height = image.getHeight();
+
+  // Robust raster reading for SAR (1-band), multi-band, and 16-bit float TIFFs
+  const rasters = (await image.readRasters()) as any;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error("Could not create canvas context");
+
+  const imageData = ctx.createImageData(width, height);
+  const band1 = rasters[0];
+  const band2 = rasters.length > 1 ? rasters[1] : rasters[0];
+  const band3 = rasters.length > 2 ? rasters[2] : rasters[0];
+  // ...
+}
+```
+
+The decoded output is a PNG base-64 string returned to `processImageForGemini`, which sets `mimeType: 'image/png'` for the Gemini inline data part.
+
+### Auto-contrast normalization for SAR and 16-bit images
+
+Raw GeoTIFF raster values often span 16-bit or floating-point ranges that map poorly to the 0–255 display gamut. `convertTiffToPngBase64` performs a fast approximate min/max scan over the first band, then stretches all three bands linearly into the 8-bit range:
+
+```typescript
+// Fast auto-contrast (approximate min/max)
+let min = Infinity, max = -Infinity;
+const step = Math.max(1, Math.floor(band1.length / 10000));
+for (let i = 0; i < band1.length; i += step) {
+  if (band1[i] < min) min = band1[i];
+  if (band1[i] > max) max = band1[i];
+}
+const range = (max - min) || 1;
+
+for (let i = 0; i < band1.length; i++) {
+  imageData.data[i * 4]     = ((band1[i] - min) / range) * 255;  // R
+  imageData.data[i * 4 + 1] = ((band2[i] - min) / range) * 255;  // G
+  imageData.data[i * 4 + 2] = ((band3[i] - min) / range) * 255;  // B
+  imageData.data[i * 4 + 3] = 255;                                 // Alpha
+}
+```
+
+The step size is adaptive: for large images the sampler jumps every `⌊pixels / 10 000⌋` values to keep the scan under a millisecond without sacrificing contrast accuracy.
+
+<Note>
+  Single-band SAR imagery (1 raster plane) is rendered as a grayscale RGB triplet by mapping `band1` to all three channels. Multi-band images use the first three bands as R, G, B respectively.
+</Note>
+
+## Preview thumbnails
+
+Preview behaviour depends on the image format:
+
+| Format | Preview |
+|---|---|
+| `.png` / `.jpg` / `.jpeg` | Object URL created immediately; small circular thumbnail shown in the upload chip and a full thumbnail in the response |
+| `.tif` / `.tiff` / `.geotiff` | No thumbnail in the chip (`previewUrl: null`); the decoded PNG is generated asynchronously when the query is submitted |
+| `.jp2` / `.img` | No thumbnail |
+
+Non-previewable files in the upload chip area display a `FileImage` icon alongside the truncated filename:
+
+```typescript
+{img.previewUrl ? (
+  <img src={img.previewUrl} alt="" className="size-5 rounded-full object-cover" />
+) : (
+  <FileImage className="size-4 text-[#7D786F]" />
+)}
+```
+
+The same `FileImage` placeholder appears in the response bubble when Gemini returns a result for a file that had no preview URL.
+
+## Removing an image from the queue
+
+Click the `×` button on any upload chip to remove it. The object URL is revoked immediately to release memory:
+
+```typescript
+const removeImage = (id: string) => {
+  const t = pendingImages.find((i) => i.id === id);
+  if (t?.previewUrl) URL.revokeObjectURL(t.previewUrl);
+  setPendingImages((p) => p.filter((i) => i.id !== id));
+};
+```

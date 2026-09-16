@@ -1,0 +1,102 @@
+---
+title: "BackendSettings Component — API Key & Gradio URL"
+sidebarTitle: "BackendSettings"
+description: "Floating settings popover that stores the Gemini API key and GeoChat Gradio URL in localStorage and broadcasts changes to the rest of the app."
+---
+
+`BackendSettings` is the single point of credential management in Earth Query Lens. It renders a compact gear-button in any toolbar or header, overlays a popover form when clicked, and persists credentials to `localStorage` so they survive page refreshes without a server round-trip. Because the app is fully client-side, no credentials are ever sent anywhere other than the inference endpoints the user configures.
+
+## Import
+
+```typescript
+import { BackendSettings } from "@/components/BackendSettings";
+```
+
+## Props
+
+<ParamField body="onChange" type="(keys: { geminiKey: string; gradioUrl: string }) => void" optional>
+  Callback fired after the user clicks **Save**. Receives the current values of both fields, even if one is empty. Use this to re-initialise SDK clients or refresh any online-status state held higher in the tree.
+</ParamField>
+
+## Rendered UI
+
+The component renders two distinct regions:
+
+### Trigger button
+
+A circular icon button containing the `Settings` (gear) icon from Lucide. A small status badge is positioned in the top-right corner of the button:
+
+| Condition | Icon | Colour |
+|---|---|---|
+| At least one credential is configured (`geminiKey` or `gradioUrl` is non-empty) | `CheckCircle2` | Green (`#3D7E5D`) |
+| Both credentials are empty | `AlertCircle` | Red (`#D94636`) |
+
+Clicking the button toggles the popover. Clicking anywhere outside the popover closes it (via a `mousedown` listener attached in a `useEffect`).
+
+### Settings popover
+
+A `320 px`-wide panel that drops below the trigger button and contains:
+
+| Field | Input type | `localStorage` key | Placeholder |
+|---|---|---|---|
+| Gemini API Key | `password` | `satquery.apikey` | `AIzaSy...` |
+| GeoChat Gradio URL | `url` | `satquery.gradiourl` | `https://...gradio.live` |
+
+**Save** — writes both values to `localStorage` (removes the key if the field is blank), updates the online badge, and fires `onChange`.  
+**Cancel** — closes the popover without writing anything.
+
+## State & storage lifecycle
+
+```
+Mount
+ └─ useEffect reads localStorage
+      ├─ satquery.apikey   → geminiKey state
+      ├─ satquery.gradiourl → gradioUrl state
+      └─ online = (geminiKey || gradioUrl) ? true : false
+
+Save click
+ ├─ localStorage.setItem / removeItem for each field
+ ├─ online state updated
+ ├─ onChange?.({ geminiKey, gradioUrl }) fired
+ └─ popover closed
+```
+
+<Note>
+  `online` is purely derived from whether a credential is stored — it does **not** perform a live network probe. Use `checkHealth()` from `@/lib/satquery` if you need to verify the backend is reachable.
+</Note>
+
+## Usage example
+
+```tsx
+import { BackendSettings } from "@/components/BackendSettings";
+import { useState } from "react";
+
+export function AppHeader() {
+  const [geminiKey, setGeminiKey] = useState("");
+  const [gradioUrl, setGradioUrl] = useState("");
+
+  return (
+    <header className="flex items-center justify-between px-6 py-3 border-b">
+      <span className="font-bold text-lg">Earth Query Lens</span>
+
+      <BackendSettings
+        onChange={({ geminiKey, gradioUrl }) => {
+          setGeminiKey(geminiKey);
+          setGradioUrl(gradioUrl);
+          console.log("Credentials updated:", { geminiKey, gradioUrl });
+        }}
+      />
+    </header>
+  );
+}
+```
+
+<Tip>
+  Because `onChange` is optional, you can drop `<BackendSettings />` into any layout without wiring up a handler first — the component self-manages its own `localStorage` reads and writes regardless.
+</Tip>
+
+## Behaviour notes
+
+- **SSR safety** — every `localStorage` access is guarded by `typeof window !== "undefined"`, so the component can be imported in Next.js app-router server components without throwing.
+- **Empty-field clearing** — saving an empty field calls `localStorage.removeItem` rather than storing an empty string, keeping storage clean.
+- **Click-outside dismissal** — the listener is registered on `document` and cleaned up via the `useEffect` return function, preventing memory leaks.

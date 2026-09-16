@@ -1,0 +1,364 @@
+---
+title: "SatQuery Client — All Exported Functions Reference"
+sidebarTitle: "Functions"
+description: "Full reference for every function exported by the SatQuery client: URL management, error handling, analysis, health checks, and confidence utilities."
+---
+
+The SatQuery client library exposes a small, focused set of functions that cover the complete interaction surface between Earth Query Lens and the SatQuery backend: resolving the API base URL, submitting analysis requests, checking backend availability, formatting confidence scores, and translating HTTP errors into sentences a user can act on. All functions are pure TypeScript with no external runtime dependencies — they run entirely in the browser using the Fetch API and `localStorage`.
+
+---
+
+## `getApiBaseUrl`
+
+Resolves the active SatQuery backend address. It first checks `localStorage` under the key `satquery.api_base_url` (set by the user through the Backend Settings panel), then falls back to the `VITE_SATQUERY_API_URL` build-time environment variable. Trailing slashes are stripped from both sources so callers can safely append path segments with a leading `/`.
+
+```typescript
+export function getApiBaseUrl(): string
+```
+
+<ResponseField name="returns" type="string">
+  The resolved base URL with no trailing slash, e.g. `"https://api.example.com"`. Returns an empty string `""` if neither source is configured, which causes `analyze()` to throw a `SatQueryError` with `status: 0`.
+</ResponseField>
+
+<Note>
+  `getApiBaseUrl` is safe to call in SSR contexts — it guards the `window.localStorage` access with a `typeof window !== "undefined"` check and silently skips the localStorage read on the server.
+</Note>
+
+<CodeGroup>
+```typescript Usage
+import { getApiBaseUrl } from "@/lib/satquery";
+
+const base = getApiBaseUrl();
+console.log(base); // "https://api.example.com"
+```
+
+```typescript With env var fallback
+// .env
+// VITE_SATQUERY_API_URL=https://api.example.com
+
+import { getApiBaseUrl } from "@/lib/satquery";
+
+// localStorage key not set → falls back to env var
+const base = getApiBaseUrl();
+// → "https://api.example.com"
+```
+</CodeGroup>
+
+---
+
+## `setApiBaseUrl`
+
+Persists a new backend base URL to `localStorage` under the key `satquery.api_base_url`. The value is trimmed and stripped of trailing slashes before storage. Passing an empty string (or a string that becomes empty after trimming) removes the key from `localStorage`, causing subsequent `getApiBaseUrl()` calls to fall back to the environment variable.
+
+```typescript
+export function setApiBaseUrl(url: string): void
+```
+
+<ParamField path="url" type="string" required>
+  The backend base URL to persist, e.g. `"https://api.example.com"`. Pass an empty string `""` to clear the stored value and revert to the environment variable fallback.
+</ParamField>
+
+<ResponseField name="returns" type="void">
+  No return value. Returns immediately without side effects if called in a non-browser environment (SSR guard).
+</ResponseField>
+
+<CodeGroup>
+```typescript Setting a URL
+import { setApiBaseUrl, getApiBaseUrl } from "@/lib/satquery";
+
+setApiBaseUrl("https://my-satquery.example.com/");
+console.log(getApiBaseUrl()); // "https://my-satquery.example.com"
+```
+
+```typescript Clearing the stored URL
+import { setApiBaseUrl } from "@/lib/satquery";
+
+// Revert to VITE_SATQUERY_API_URL env var
+setApiBaseUrl("");
+```
+</CodeGroup>
+
+---
+
+## `humanizeError`
+
+Converts any thrown value into a user-friendly sentence. It is the single place in the codebase that maps raw HTTP status codes and network failures to actionable messages. Accepts `unknown` so it can safely be passed the raw value from a `catch` block without type assertions.
+
+```typescript
+export function humanizeError(err: unknown): string
+```
+
+<ParamField path="err" type="unknown" required>
+  Any thrown value — typically a `SatQueryError`, a native `Error`, or an unknown object. The function uses `instanceof` checks to determine the message strategy.
+</ParamField>
+
+<ResponseField name="returns" type="string">
+  A user-friendly English sentence suitable for display in an error banner or toast notification.
+</ResponseField>
+
+The mapping table applied when `err` is a `SatQueryError`:
+
+| `status` | Returned message |
+|---|---|
+| `0` (network failure) | `"Could not reach the SatQuery backend…"` (or the original message if it references GeoChat/Gemini) |
+| `413` | `"That file is too large for the backend to accept."` |
+| `415` | `"That file format isn't supported by the backend."` |
+| `422` or `400` | `err.message` verbatim (backend validation detail) |
+| `503` | `err.message` or `"The requested model is currently unavailable on the backend."` |
+| `≥ 500` | `err.message` or `"The backend failed while processing this request."` |
+| any other | `err.message` verbatim |
+
+For non-`SatQueryError` values the function returns `err.message` (if `err instanceof Error`) or the fallback string `"Something went wrong."`.
+
+<CodeGroup>
+```typescript In a try/catch block
+import { analyze, humanizeError } from "@/lib/satquery";
+
+try {
+  const result = await analyze({ query: "Count buildings", files });
+} catch (err) {
+  const message = humanizeError(err);
+  showToast({ variant: "error", message });
+}
+```
+
+```typescript Handling specific status codes
+import { SatQueryError, humanizeError } from "@/lib/satquery";
+
+const networkErr = new SatQueryError("network", 0);
+console.log(humanizeError(networkErr));
+// "Could not reach the SatQuery backend. Check that it is running…"
+
+const tooLarge = new SatQueryError("Payload too large", 413);
+console.log(humanizeError(tooLarge));
+// "That file is too large for the backend to accept."
+```
+</CodeGroup>
+
+---
+
+## `analyze`
+
+Submits one or more satellite images with a natural-language query to the SatQuery backend and returns the full `AnalysisResponse`. The function builds a `multipart/form-data` payload internally — callers pass plain `File` objects and a query string; no manual FormData construction is required.
+
+The payload contains:
+- `query` — the user's question
+- `images` — every file appended under the same field name (backend may use this as a list)
+- `image_1`, `image_2`, … `image_N` — each file also appended under its own numbered key
+
+```typescript
+export async function analyze(input: {
+  query: string;
+  files: File[];
+  signal?: AbortSignal;
+}): Promise<AnalysisResponse>
+```
+
+<ParamField path="input" type="object" required>
+  <Expandable title="input fields">
+    <ParamField path="input.query" type="string" required>
+      The natural-language question or instruction, e.g. `"Are there signs of flooding in this image?"`.
+    </ParamField>
+    <ParamField path="input.files" type="File[]" required>
+      Array of `File` objects to upload. At least one file is expected; all files are sent in a single multipart request.
+    </ParamField>
+    <ParamField path="input.signal" type="AbortSignal">
+      Optional `AbortSignal` to cancel the in-flight request. Pass `controller.signal` from an `AbortController` to support user-initiated cancellation.
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+<ResponseField name="returns" type="Promise<AnalysisResponse>">
+  Resolves with the full `AnalysisResponse` object on success. See the [`AnalysisResponse`](/reference/satquery-types#analysisresponse) type reference for the complete field listing.
+</ResponseField>
+
+The function throws a `SatQueryError` in the following cases:
+
+| Condition | `status` | `message` |
+|---|---|---|
+| No base URL configured | `0` | Instructions to open Backend Settings |
+| Network failure (fetch threw) | `0` | `"network"` |
+| Non-`2xx` HTTP response | HTTP status code | Backend error detail extracted from `detail`, `message`, or `error` JSON keys |
+
+<Note>
+  `analyze` does **not** set a `Content-Type` header manually. The browser sets the correct `multipart/form-data` boundary automatically when a `FormData` body is provided to `fetch`.
+</Note>
+
+<CodeGroup>
+```typescript Basic usage
+import { analyze } from "@/lib/satquery";
+
+const fileInput = document.querySelector<HTMLInputElement>("#upload")!;
+const files = Array.from(fileInput.files ?? []);
+
+const response = await analyze({
+  query: "Identify land cover types in this image.",
+  files,
+});
+
+console.log(response.answer);
+```
+
+```typescript With AbortController
+import { analyze, humanizeError } from "@/lib/satquery";
+
+const controller = new AbortController();
+
+// Allow the user to cancel
+cancelButton.addEventListener("click", () => controller.abort());
+
+try {
+  const response = await analyze({
+    query: "Detect changes between these two images.",
+    files: [beforeImage, afterImage],
+    signal: controller.signal,
+  });
+  renderResult(response);
+} catch (err) {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    console.log("Request cancelled by user.");
+  } else {
+    showError(humanizeError(err));
+  }
+}
+```
+
+```typescript Multiple files with confidence display
+import { analyze, formatConfidence } from "@/lib/satquery";
+
+const response = await analyze({
+  query: "Count ships in the harbour.",
+  files: [opticalImage, sarImage],
+});
+
+if (response.answer) {
+  console.log(`Answer: ${response.answer}`);
+  console.log(`Confidence: ${formatConfidence(response.confidence)}`);
+}
+```
+</CodeGroup>
+
+---
+
+## `checkHealth`
+
+Sends a lightweight `GET` request to `{base}/health` to verify that the configured backend is reachable and responsive. Returns `false` (rather than throwing) for any failure — network error, non-`2xx` response, or missing base URL — making it safe to use in polling loops or status indicators without `try/catch`.
+
+```typescript
+export async function checkHealth(): Promise<boolean>
+```
+
+<ResponseField name="returns" type="Promise<boolean>">
+  Resolves with `true` if the backend responded with a `2xx` status, or `false` for any error or misconfiguration.
+</ResponseField>
+
+<Tip>
+  Use `checkHealth` as a preflight check in your Backend Settings panel to give users immediate feedback when they enter a new URL, rather than waiting for a full `analyze()` round-trip to fail.
+</Tip>
+
+<CodeGroup>
+```typescript Status indicator
+import { checkHealth } from "@/lib/satquery";
+
+const healthy = await checkHealth();
+setBackendStatus(healthy ? "online" : "offline");
+```
+
+```typescript Polling every 30 seconds
+import { checkHealth } from "@/lib/satquery";
+
+setInterval(async () => {
+  const ok = await checkHealth();
+  updateStatusBadge(ok);
+}, 30_000);
+```
+</CodeGroup>
+
+---
+
+## `formatConfidence`
+
+Converts a raw confidence value — which may arrive as either a 0–1 ratio or a 0–100 percentage — into a rounded percentage string for display. Returns `null` for missing, non-numeric, or `NaN` inputs so the UI can substitute a fallback label (e.g., `"N/A"`) without further guards.
+
+```typescript
+export function formatConfidence(value?: number): string | null
+```
+
+<ParamField path="value" type="number">
+  Raw confidence value. Values `≤ 1` are treated as ratios (multiplied by 100); values `> 1` are treated as already being percentages.
+</ParamField>
+
+<ResponseField name="returns" type="string | null">
+  A rounded percentage string such as `"87%"`, or `null` if `value` is `undefined`, `NaN`, or not a number.
+</ResponseField>
+
+<CodeGroup>
+```typescript Displaying answer confidence
+import { formatConfidence } from "@/lib/satquery";
+
+console.log(formatConfidence(0.873));  // "87%"
+console.log(formatConfidence(87.3));   // "87%"
+console.log(formatConfidence(1));      // "100%"
+console.log(formatConfidence(0));      // "0%"
+console.log(formatConfidence());       // null
+console.log(formatConfidence(NaN));    // null
+```
+
+```typescript Conditional rendering
+import { formatConfidence } from "@/lib/satquery";
+
+const label = formatConfidence(response.confidence) ?? "N/A";
+// Renders "87%" or "N/A" — never crashes on missing field
+```
+</CodeGroup>
+
+---
+
+## `confidenceRatio`
+
+Normalises a raw confidence value to the `[0, 1]` range, clamping any out-of-range results. Like `formatConfidence`, it accepts values in either 0–1 or 0–100 form and returns `null` for invalid inputs. Use this when you need a numeric ratio (e.g., for a CSS `width` percentage or a progress bar) rather than a display string.
+
+```typescript
+export function confidenceRatio(value?: number): number | null
+```
+
+<ParamField path="value" type="number">
+  Raw confidence value. Values `≤ 1` are passed through as-is; values `> 1` are divided by 100. The result is clamped to `[0, 1]`.
+</ParamField>
+
+<ResponseField name="returns" type="number | null">
+  A number in the range `[0, 1]` representing the confidence ratio, or `null` if `value` is `undefined`, `NaN`, or not a number.
+</ResponseField>
+
+<CodeGroup>
+```typescript Normalising confidence scores
+import { confidenceRatio } from "@/lib/satquery";
+
+console.log(confidenceRatio(0.873));  // 0.873
+console.log(confidenceRatio(87.3));   // 0.873
+console.log(confidenceRatio(1));      // 1
+console.log(confidenceRatio(0));      // 0
+console.log(confidenceRatio(110));    // 1  (clamped)
+console.log(confidenceRatio(-5));     // 0  (clamped)
+console.log(confidenceRatio());       // null
+```
+
+```typescript Driving a progress bar width
+import { confidenceRatio } from "@/lib/satquery";
+
+const ratio = confidenceRatio(response.confidence);
+const widthStyle = ratio !== null
+  ? { width: `${ratio * 100}%` }
+  : { width: "0%" };
+```
+
+```typescript Using both helpers together
+import { formatConfidence, confidenceRatio } from "@/lib/satquery";
+
+const ratio = confidenceRatio(response.confidence);   // 0.87
+const label = formatConfidence(response.confidence);  // "87%"
+
+// ratio  → drives visual fill width
+// label  → displayed as accessible text alongside the bar
+```
+</CodeGroup>

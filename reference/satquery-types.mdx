@@ -1,0 +1,433 @@
+---
+title: "SatQuery Client — TypeScript Types, Interfaces, and Errors"
+sidebarTitle: "Types & Interfaces"
+description: "Complete reference for every TypeScript type, interface, and error class exported from the SatQuery client library used by Earth Query Lens."
+---
+
+The SatQuery client library is designed around a single principle: **render only what the backend actually returns**. Every field in every interface is optional unless the contract explicitly demands it, so the UI can degrade gracefully when a field is absent rather than crashing on missing data. This page documents all types and interfaces exported from `src/lib/satquery.ts`.
+
+---
+
+## `Modality`
+
+A discriminated string union that identifies the sensor type of an uploaded image. The backend detects modality automatically; if detection fails the value falls back to `"unknown"`.
+
+```typescript
+export type Modality = "optical" | "sar" | "unknown";
+```
+
+<ResponseField name="Modality" type='"optical" | "sar" | "unknown"'>
+  <Expandable title="Variants">
+    <ResponseField name='"optical"' type="string">
+      Standard visible-light or multispectral imagery captured by passive optical sensors.
+    </ResponseField>
+    <ResponseField name='"sar"' type="string">
+      Synthetic Aperture Radar imagery produced by active microwave sensors, usable in all weather and lighting conditions.
+    </ResponseField>
+    <ResponseField name='"unknown"' type="string">
+      Modality could not be determined from file headers or content.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## `ImageMetadata`
+
+Per-image metadata that the backend extracts during ingestion and validation. All fields are optional because not every format exposes every attribute. The index signature `[key: string]: unknown` means the backend may return arbitrary extra keys; the UI ignores unknown keys rather than erroring.
+
+```typescript
+export interface ImageMetadata {
+  filename?: string;
+  modality?: string;
+  width?: number;
+  height?: number;
+  bands?: number | string[];
+  crs?: string;
+  resolution?: string | number;
+  file_type?: string;
+  validation_status?: string;
+  [key: string]: unknown;
+}
+```
+
+<ResponseField name="filename" type="string">
+  Original file name as provided by the client.
+</ResponseField>
+
+<ResponseField name="modality" type="string">
+  Detected sensor modality. Typically `"optical"`, `"sar"`, or `"unknown"`. Use the `Modality` type for exhaustive checks.
+</ResponseField>
+
+<ResponseField name="width" type="number">
+  Image width in pixels.
+</ResponseField>
+
+<ResponseField name="height" type="number">
+  Image height in pixels.
+</ResponseField>
+
+<ResponseField name="bands" type="number | string[]">
+  Number of spectral bands (e.g., `3` for RGB) or an ordered array of band names (e.g., `["Red", "Green", "Blue", "NIR"]`).
+</ResponseField>
+
+<ResponseField name="crs" type="string">
+  Coordinate Reference System string, e.g. `"EPSG:4326"`. Present only for georeferenced files.
+</ResponseField>
+
+<ResponseField name="resolution" type="string | number">
+  Ground sample distance — either a plain number in metres per pixel or a human-readable string such as `"10m"`.
+</ResponseField>
+
+<ResponseField name="file_type" type="string">
+  MIME type or format identifier detected by the backend (e.g., `"image/tiff"`, `"GeoTIFF"`).
+</ResponseField>
+
+<ResponseField name="validation_status" type="string">
+  Result of backend pre-flight validation. Common values include `"valid"`, `"warning"`, and `"rejected"`.
+</ResponseField>
+
+<ResponseField name="[key: string]" type="unknown">
+  The backend may include additional vendor- or format-specific fields. Consumers should treat unknown keys as opaque.
+</ResponseField>
+
+---
+
+## `BoundingBox`
+
+A georeferenced or pixel-space bounding box with an optional semantic label and detection confidence. Used both in grounding arrays (spatial references within the answer) and in change-detection region lists.
+
+```typescript
+export interface BoundingBox {
+  bbox: [number, number, number, number];
+  label?: string;
+  confidence?: number;
+}
+```
+
+<ResponseField name="bbox" type="[number, number, number, number]" required>
+  A four-element tuple in `[x_min, y_min, x_max, y_max]` order. Coordinates are in pixel space unless the image carries a CRS, in which case they may be geographic.
+</ResponseField>
+
+<ResponseField name="label" type="string">
+  Human-readable label for the detected region, e.g. `"Oil tank"` or `"Flooded area"`.
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Detection confidence for this specific box in the range `[0, 1]`. Use `confidenceRatio()` to normalise values that may arrive as percentages.
+</ResponseField>
+
+---
+
+## `EvidenceItem`
+
+A single piece of evidence cited by the Gemini Vision model to support its answer. Evidence items can represent visual features, spectral anomalies, spatial patterns, or any other observation the model deems relevant.
+
+```typescript
+export interface EvidenceItem {
+  type?: string;
+  label?: string;
+  detail?: string;
+  description?: string;
+}
+```
+
+<ResponseField name="type" type="string">
+  Category of evidence, e.g. `"visual"`, `"spectral"`, `"spatial"`, or `"contextual"`.
+</ResponseField>
+
+<ResponseField name="label" type="string">
+  Short display label shown in the UI evidence list, e.g. `"Thermal plume"`.
+</ResponseField>
+
+<ResponseField name="detail" type="string">
+  A concise one-liner elaborating on the evidence item, suitable for tooltips or secondary text.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Longer prose description of the evidence, providing full context for the observation.
+</ResponseField>
+
+---
+
+## `ExecutionStep`
+
+One step in the model's internal reasoning pipeline, surfaced for transparency and debugging. Steps progress through a status lifecycle and may carry a free-text `detail` field for further inspection.
+
+```typescript
+export interface ExecutionStep {
+  name: string;
+  status?: "pending" | "running" | "done" | "failed";
+  detail?: string;
+}
+```
+
+<ResponseField name="name" type="string" required>
+  Identifier for this pipeline step, e.g. `"image_validation"`, `"task_routing"`, or `"specialist_inference"`.
+</ResponseField>
+
+<ResponseField name="status" type='"pending" | "running" | "done" | "failed"'>
+  Lifecycle state of the step. The UI uses this to render progress indicators.
+
+  <Expandable title="Status variants">
+    <ResponseField name='"pending"' type="string">Step is queued but has not started.</ResponseField>
+    <ResponseField name='"running"' type="string">Step is actively executing.</ResponseField>
+    <ResponseField name='"done"' type="string">Step completed successfully.</ResponseField>
+    <ResponseField name='"failed"' type="string">Step encountered an error; inspect `detail` for the cause.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="detail" type="string">
+  Optional diagnostic message describing what happened during this step, particularly useful when `status` is `"failed"`.
+</ResponseField>
+
+---
+
+## `ExecutionTrace`
+
+The full provenance record for a single analysis request. `ExecutionTrace` is intended for power users and developers who want to understand exactly which model was invoked, which specialist was selected, and how confident the pipeline was at each stage.
+
+```typescript
+export interface ExecutionTrace {
+  query?: string;
+  inputs?: string;
+  detected_task?: string;
+  validation?: string;
+  specialist?: string;
+  model?: string;
+  steps?: ExecutionStep[];
+  result?: string;
+  confidence?: number;
+  errors?: string[];
+  disagreement?: string | boolean;
+}
+```
+
+<ResponseField name="query" type="string">
+  The original query string submitted by the user, echoed back for traceability.
+</ResponseField>
+
+<ResponseField name="inputs" type="string">
+  Summary of the input images processed in this request (e.g., `"2 images: optical, sar"`).
+</ResponseField>
+
+<ResponseField name="detected_task" type="string">
+  The task type the router classified this request as, e.g. `"change_detection"` or `"object_counting"`.
+</ResponseField>
+
+<ResponseField name="validation" type="string">
+  Outcome of the input validation stage — a human-readable status string.
+</ResponseField>
+
+<ResponseField name="specialist" type="string">
+  Name or identifier of the specialist model or agent that handled the request.
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  Specific model version used for inference, e.g. `"gemini-2.0-flash"`.
+</ResponseField>
+
+<ResponseField name="steps" type="ExecutionStep[]">
+  Ordered list of pipeline steps with their status and detail. See [`ExecutionStep`](#executionstep).
+</ResponseField>
+
+<ResponseField name="result" type="string">
+  Raw string result produced by the model before post-processing.
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Overall pipeline confidence score in the range `[0, 1]` or `[0, 100]`. Use `confidenceRatio()` to normalise.
+</ResponseField>
+
+<ResponseField name="errors" type="string[]">
+  Array of non-fatal error or warning messages collected during the trace.
+</ResponseField>
+
+<ResponseField name="disagreement" type="string | boolean">
+  Indicates whether multiple sub-models or specialists produced conflicting outputs. A `true` boolean or a descriptive string signals that the answer should be treated with caution.
+</ResponseField>
+
+---
+
+## `ChangeResult`
+
+Output of a temporal change-detection analysis comparing two or more images. Provides both a high-level summary and, optionally, spatial regions where change was localised.
+
+```typescript
+export interface ChangeResult {
+  change_detected?: boolean;
+  changed_area_percent?: number;
+  description?: string;
+  change_map_url?: string;
+  regions?: BoundingBox[];
+  confidence?: number;
+}
+```
+
+<ResponseField name="change_detected" type="boolean">
+  Top-level flag — `true` if the model found statistically significant change between the provided images.
+</ResponseField>
+
+<ResponseField name="changed_area_percent" type="number">
+  Estimated percentage of the image area that changed, in the range `[0, 100]`.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Prose summary of the detected change, e.g. `"Urban expansion visible on the eastern boundary"`.
+</ResponseField>
+
+<ResponseField name="change_map_url" type="string">
+  URL of a generated change-map overlay image. Present only when the backend produces a visualisation artefact.
+</ResponseField>
+
+<ResponseField name="regions" type="BoundingBox[]">
+  Bounding boxes localising individual changed regions. Each box may carry its own `label` and `confidence`. See [`BoundingBox`](#boundingbox).
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Change-detection confidence score in the range `[0, 1]` or `[0, 100]`.
+</ResponseField>
+
+---
+
+## `OpticalSarResult`
+
+Fusion output produced when the pipeline receives both optical and SAR images for the same scene. Each evidence field accepts either a single string summary or an array of discrete observations.
+
+```typescript
+export interface OpticalSarResult {
+  optical_evidence?: string | string[];
+  sar_evidence?: string | string[];
+  complementary?: string | string[];
+  confidence?: number;
+}
+```
+
+<ResponseField name="optical_evidence" type="string | string[]">
+  Observations derived exclusively from the optical image(s), e.g. colour, texture, or shadow analysis.
+</ResponseField>
+
+<ResponseField name="sar_evidence" type="string | string[]">
+  Observations derived exclusively from the SAR image(s), e.g. backscatter intensity or coherence patterns.
+</ResponseField>
+
+<ResponseField name="complementary" type="string | string[]">
+  Cross-modal insights — findings that are reinforced or contradicted when optical and SAR observations are fused.
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Fusion confidence score in the range `[0, 1]` or `[0, 100]`.
+</ResponseField>
+
+---
+
+## `AnalysisResponse`
+
+The top-level response object returned by the `analyze()` function. It aggregates every artefact the backend may return: a natural-language answer, spatial grounding, change analysis, optical/SAR fusion, per-image metadata, a full execution trace, and a downloadable report.
+
+<Note>
+  Every field is optional. The UI should always guard with `?.` or `?? fallback` before rendering any field.
+</Note>
+
+```typescript
+export interface AnalysisResponse {
+  answer?: string;
+  caption?: string;
+  confidence?: number;
+  model?: string;
+  task?: string;
+  evidence?: EvidenceItem[] | string[];
+  grounding?: BoundingBox[];
+  change?: ChangeResult;
+  optical_sar?: OpticalSarResult;
+  metadata?: ImageMetadata[];
+  execution_trace?: ExecutionTrace;
+  report_url?: string;
+  report_id?: string;
+  warnings?: string[];
+}
+```
+
+<ResponseField name="answer" type="string">
+  Primary natural-language answer to the user's query, generated by the Gemini Vision model.
+</ResponseField>
+
+<ResponseField name="caption" type="string">
+  A short descriptive caption for the scene, independent of the query. Useful as an image-level summary.
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Overall answer confidence in the range `[0, 1]` or `[0, 100]`. Pass to `formatConfidence()` for display.
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  Identifier of the model that produced the answer, e.g. `"gemini-2.0-flash"`.
+</ResponseField>
+
+<ResponseField name="task" type="string">
+  Resolved task type, matching `ExecutionTrace.detected_task`, e.g. `"classification"`.
+</ResponseField>
+
+<ResponseField name="evidence" type="EvidenceItem[] | string[]">
+  Evidence items supporting the answer. May be structured [`EvidenceItem`](#evidenceitem) objects or plain strings depending on the backend version.
+</ResponseField>
+
+<ResponseField name="grounding" type="BoundingBox[]">
+  Spatial bounding boxes referenced in the answer. See [`BoundingBox`](#boundingbox).
+</ResponseField>
+
+<ResponseField name="change" type="ChangeResult">
+  Change-detection analysis results. Populated only for temporal queries. See [`ChangeResult`](#changeresult).
+</ResponseField>
+
+<ResponseField name="optical_sar" type="OpticalSarResult">
+  Optical/SAR fusion results. Populated only when both modalities are present. See [`OpticalSarResult`](#optticalsarresult).
+</ResponseField>
+
+<ResponseField name="metadata" type="ImageMetadata[]">
+  Per-image metadata extracted during ingestion, one entry per uploaded file. See [`ImageMetadata`](#imagemetadata).
+</ResponseField>
+
+<ResponseField name="execution_trace" type="ExecutionTrace">
+  Full provenance trace of the analysis pipeline. See [`ExecutionTrace`](#executiontrace).
+</ResponseField>
+
+<ResponseField name="report_url" type="string">
+  URL of a generated PDF or HTML report for the analysis. Present only when the backend produces a report artefact.
+</ResponseField>
+
+<ResponseField name="report_id" type="string">
+  Unique identifier for the stored report, usable to retrieve or share the report later.
+</ResponseField>
+
+<ResponseField name="warnings" type="string[]">
+  Non-fatal warnings about the request or results, e.g. low-resolution input or partial model failure.
+</ResponseField>
+
+---
+
+## `SatQueryError`
+
+A specialised `Error` subclass that carries the HTTP status code alongside the message, enabling `humanizeError()` to produce user-friendly strings without re-parsing the error. A `status` of `0` specifically represents a network failure (no response received).
+
+```typescript
+export class SatQueryError extends Error {
+  status: number | undefined;
+  constructor(message: string, status?: number) {
+    super(message);
+    this.status = status;
+  }
+}
+```
+
+<ResponseField name="message" type="string" required>
+  Human-readable error message inherited from `Error`. For 422/400 responses this is the verbatim backend `detail` string.
+</ResponseField>
+
+<ResponseField name="status" type="number">
+  HTTP status code of the failed response, or `0` for network-level failures (fetch threw before a response arrived). `undefined` if the error was thrown without a status context.
+</ResponseField>
+
+<Tip>
+  Use `instanceof SatQueryError` checks before accessing `.status`. All errors thrown by `analyze()` and `checkHealth()` are `SatQueryError` instances; native `Error` objects may still surface from unexpected runtime failures.
+</Tip>

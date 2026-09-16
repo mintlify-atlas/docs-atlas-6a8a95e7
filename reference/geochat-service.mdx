@@ -1,0 +1,253 @@
+---
+title: "GeoChat Service: Gradio Vision Backend Integration"
+sidebarTitle: "GeoChat Service"
+description: "Reference for analyzeWithGeoChat — how Earth Query Lens connects to a self-hosted or HuggingFace-hosted GeoChat Gradio server via @gradio/client."
+---
+
+`analyzeWithGeoChat` provides an alternative inference path that routes a satellite-imagery query to a running [GeoChat](https://github.com/mbzuai-oryx/GeoChat) Gradio server instead of the Gemini Vision API. The function reads the target server URL from `localStorage`, establishes a connection through `@gradio/client`, calls the `/predict` endpoint with the uploaded image, user query, and task type, then parses the response as a standard `AnalysisResponse` object — the same shape returned by `analyzeWithGemini`. This makes GeoChat a drop-in inference back-end whenever you need a self-hosted, open-weights model for geospatial visual question answering.
+
+<Note>
+  GeoChat requires a **running Gradio server** — either self-hosted (e.g. on a GPU machine) or deployed as a HuggingFace Space — that exposes a `/predict` endpoint accepting `image`, `query`, and `task_type` fields and returning a JSON-serialized `AnalysisResponse`. Earth Query Lens does **not** bundle or start a Gradio server; you must provision one separately before this function can be used.
+</Note>
+
+---
+
+## Current Status in the Submit Flow
+
+`analyzeWithGeoChat` is **not invoked** by the main chat submit handler in the current codebase. The routing condition that would enable it reads:
+
+```typescript
+// This condition is never true — messages.length is always >= 0
+if (messages.length === -1) {
+  return analyzeWithGeoChat(query, files);
+}
+```
+
+Because `Array.length` is always `≥ 0`, `messages.length === -1` can never be satisfied. GeoChat is therefore **available only via direct function call** — for example from custom scripts, test harnesses, or future feature branches. The Gemini fallback chain handles all production traffic.
+
+<Warning>
+  Do not rely on GeoChat being invoked automatically from the chat UI. If you need GeoChat-powered responses, call `analyzeWithGeoChat` directly from your own integration code.
+</Warning>
+
+---
+
+## Configuring the GeoChat URL
+
+The Gradio server URL is read from `localStorage` under the key `satquery.gradiourl`. There are two ways to set it:
+
+### Option 1 — BackendSettings Panel
+
+Open the **Backend Settings** drawer in the Earth Query Lens UI. The "GeoChat / Gradio URL" field writes directly to `localStorage` under `satquery.gradiourl`. Changes take effect immediately without a page reload.
+
+### Option 2 — Manual `localStorage` Write
+
+```typescript
+// Set the URL (e.g. from a browser console or a setup script)
+window.localStorage.setItem(
+  'satquery.gradiourl',
+  'https://your-space.hf.space'
+);
+
+// Clear the URL
+window.localStorage.removeItem('satquery.gradiourl');
+```
+
+<Tip>
+  HuggingFace Spaces that host GeoChat typically have URLs in the format `https://<username>-<space-name>.hf.space`. Make sure the Space is **running** (not sleeping) before dispatching a request, as cold-start latency can cause the initial connection to time out.
+</Tip>
+
+---
+
+## `analyzeWithGeoChat`
+
+Connects to the configured Gradio endpoint, submits the first uploaded image together with the user query and a fixed `task_type`, and returns a parsed `AnalysisResponse`.
+
+```typescript
+export async function analyzeWithGeoChat(
+  query: string,
+  files: File[]
+): Promise<AnalysisResponse>
+```
+
+<ParamField path="query" type="string" required>
+  The plain-language geospatial question sent to the GeoChat model, e.g. `"What land-cover type is visible in this image?"`.
+</ParamField>
+
+<ParamField path="files" type="File[]" required>
+  Array of `File` objects. Only `files[0]` is forwarded to the Gradio `/predict` endpoint. Additional files are ignored. The file is passed as a native `File` object — no base64 encoding is performed client-side; `@gradio/client` handles multipart upload internally.
+</ParamField>
+
+### Implementation Detail
+
+```typescript
+import { analyzeWithGeoChat } from '@/services/geminiService';
+
+const result = await analyzeWithGeoChat(
+  "Identify the dominant vegetation type.",
+  [satelliteImageFile]
+);
+
+console.log(result.answer);      // GeoChat's narrative response
+console.log(result.confidence);  // Confidence score if returned by the server
+```
+
+### Step-by-Step Execution
+
+<Steps>
+  <Step title="Read Gradio URL from localStorage">
+    ```typescript
+    const gradioUrl = window.localStorage.getItem("satquery.gradiourl");
+    ```
+    If the key is absent or empty, a `SatQueryError` with `status: 0` is thrown immediately:
+    ```
+    "No GeoChat Gradio URL found. Please add it to your environment or settings."
+    ```
+  </Step>
+  <Step title="Connect via @gradio/client">
+    ```typescript
+    const { Client } = await import("@gradio/client");
+    const client = await Client.connect(gradioUrl);
+    ```
+    `@gradio/client` is dynamically imported to keep it out of the main bundle when GeoChat is not in use. `Client.connect` performs the Gradio handshake and retrieves the Space's API schema.
+  </Step>
+  <Step title="Call /predict endpoint">
+    ```typescript
+    const result = await client.predict("/predict", {
+      image: files[0],
+      query: query,
+      task_type: "vqa"
+    });
+    ```
+    The payload is a fixed-shape object. `task_type` is always `"vqa"` (Visual Question Answering). If your Gradio server expects a different task type (e.g. `"change_detection"`), you must modify this call.
+  </Step>
+  <Step title="Parse the response">
+    ```typescript
+    const data = result.data as any[];
+    const parsed = typeof data[0] === 'string'
+      ? JSON.parse(data[0])
+      : data[0];
+    return parsed as AnalysisResponse;
+    ```
+    The function expects `result.data[0]` to be either a JSON string or an already-deserialized object that conforms to `AnalysisResponse`. If `data[0]` is absent, a `SatQueryError("Invalid response from GeoChat API", 500)` is thrown. If the string cannot be parsed as JSON, a `SatQueryError("GeoChat returned invalid JSON", 500)` is thrown.
+  </Step>
+</Steps>
+
+### Error Handling
+
+All errors thrown inside the function are caught by an outer `try/catch` and re-wrapped as `SatQueryError`:
+
+```typescript
+throw new SatQueryError(`GeoChat API Error: ${error.message || "Unknown error"}`, 0);
+```
+
+| Condition | Error message |
+|-----------|---------------|
+| No URL configured | `"No GeoChat Gradio URL found. Please add it to your environment or settings."` |
+| Network or connection failure | `"GeoChat API Error: <original message>"` |
+| `result.data[0]` absent | `"Invalid response from GeoChat API"` |
+| `data[0]` is not valid JSON | `"GeoChat returned invalid JSON"` |
+
+The `humanizeError` utility in `satquery.ts` preserves the original message for GeoChat errors (`status: 0`) rather than substituting the generic "Could not reach the SatQuery backend" text, so the UI will display the specific GeoChat error to the user.
+
+---
+
+## Expected `/predict` Response Shape
+
+Your Gradio server's `/predict` handler must return an `AnalysisResponse`-compatible JSON object (or JSON string) as the first element of its output array. All fields are optional — the UI renders only those present.
+
+<ResponseField name="answer" type="string">
+  The model's textual answer to the query.
+</ResponseField>
+
+<ResponseField name="confidence" type="number">
+  Confidence score as a percentage integer (e.g. `87`) or as a `0–1` float. Both ranges are handled by `formatConfidence` in `satquery.ts`.
+</ResponseField>
+
+<ResponseField name="model" type="string">
+  Identifier of the model variant that produced the response, e.g. `"GeoChat-Large"`.
+</ResponseField>
+
+<ResponseField name="task" type="string">
+  Task category as classified by the server, e.g. `"Scene VQA"`.
+</ResponseField>
+
+<ResponseField name="evidence" type="EvidenceItem[]">
+  Optional array of supporting observations. Each item may contain `type`, `label`, and `detail` fields.
+</ResponseField>
+
+<ResponseField name="grounding" type="BoundingBox[]">
+  Optional spatial detections. `bbox` values should be normalized floats `[0.0–1.0]` for the overlay renderer to position boxes correctly.
+</ResponseField>
+
+<ResponseField name="change" type="ChangeResult">
+  Optional change-detection result with `change_detected: boolean` and `description: string`.
+</ResponseField>
+
+<ResponseField name="metadata" type="ImageMetadata[]">
+  Optional per-file metadata. Unlike `analyzeWithGemini`, `analyzeWithGeoChat` does **not** synthesize a fallback metadata array — if the server omits this field, `metadata` will be `undefined` in the returned object.
+</ResponseField>
+
+---
+
+## Minimal Gradio Server Example
+
+The following snippet illustrates the `/predict` signature your Gradio app must implement for Earth Query Lens to parse it correctly:
+
+<CodeGroup>
+
+```python Gradio server (Python)
+import gradio as gr
+import json
+
+def predict(image, query: str, task_type: str) -> str:
+    # Run your GeoChat model inference here
+    result = run_geochat(image, query, task_type)
+
+    response = {
+        "answer": result["answer"],
+        "confidence": result.get("confidence", 80),
+        "model": "GeoChat-Large",
+        "task": "Scene VQA",
+        "evidence": [{"type": "visual", "label": "Observation", "detail": result["answer"]}],
+        "metadata": [{"filename": image.name, "modality": "optical"}]
+    }
+    return json.dumps(response)
+
+demo = gr.Interface(
+    fn=predict,
+    inputs=[
+        gr.Image(type="filepath", label="image"),
+        gr.Textbox(label="query"),
+        gr.Textbox(label="task_type", value="vqa")
+    ],
+    outputs=gr.Textbox(label="result")
+)
+
+demo.launch()
+```
+
+```typescript Client call (TypeScript)
+import { analyzeWithGeoChat } from '@/services/geminiService';
+
+// Prerequisite: URL must already be set in localStorage
+window.localStorage.setItem(
+  'satquery.gradiourl',
+  'https://your-username-geochat.hf.space'
+);
+
+async function runGeoChat(imageFile: File, question: string) {
+  try {
+    const response = await analyzeWithGeoChat(question, [imageFile]);
+    console.log("Answer:", response.answer);
+    console.log("Confidence:", response.confidence);
+  } catch (err) {
+    console.error("GeoChat error:", err);
+  }
+}
+```
+
+</CodeGroup>
+
+<Note>
+  `task_type` is hardcoded to `"vqa"` on the client side. If your server supports additional task types such as `"change_detection"` or `"grounding"`, you must extend `analyzeWithGeoChat` to accept a `taskType` parameter and pass it through to the `/predict` call.
+</Note>

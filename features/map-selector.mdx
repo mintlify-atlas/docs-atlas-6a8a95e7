@@ -1,0 +1,243 @@
+---
+title: "Map Selector — Interactive CesiumJS Region Capture"
+sidebarTitle: "Map Selector"
+description: "Navigate a 3-D Cesium globe, draw a bounding box over any region, then send a screenshot directly to the chat input with auto-generated coordinate query text."
+---
+
+The Map Selector gives you a live satellite-imagery globe backed by CesiumJS. Instead of hunting for a file on disk, you can navigate to any location on Earth, draw a rectangular region of interest, and ship a screenshot straight into the analysis pipeline — coordinates are computed and pre-filled automatically so you never have to type them by hand.
+
+## Switching between Chat and Map modes
+
+A two-button toggle in the navbar controls which panel is active. Both modes share the same page layout; the Cesium canvas is kept mounted in the background so the globe retains its camera position when you switch back.
+
+```typescript
+<div className="flex bg-[#E5E0D8] p-1 rounded-xl">
+  <button onClick={() => setMode("chat")}
+    className={`flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors
+      ${mode === "chat" ? "bg-white shadow-sm text-[#1F1E1B]" : "text-[#7D786F] hover:text-[#1F1E1B]"}`}>
+    <MessageSquare className="size-3.5" /> Chat
+  </button>
+  <button onClick={() => setMode("map")}
+    className={`flex items-center gap-2 px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors
+      ${mode === "map" ? "bg-white shadow-sm text-[#1F1E1B]" : "text-[#7D786F] hover:text-[#1F1E1B]"}`}>
+    <MapIcon className="size-3.5" /> Map
+  </button>
+</div>
+```
+
+The active mode button receives a white background and a subtle shadow; the inactive button shows muted text.
+
+## Globe initialization and imagery sources
+
+The Cesium viewer is initialized once on component mount and is never re-created:
+
+```typescript
+const viewer = new Cesium.Viewer(containerRef.current, {
+  animation: false,
+  timeline: false,
+  baseLayerPicker: false,
+  homeButton: false,
+  infoBox: false,
+  sceneModePicker: false,
+  selectionIndicator: false,
+  navigationHelpButton: false,
+  geocoder: false,
+  baseLayer: new Cesium.ImageryLayer(freeSatelliteProvider),
+  contextOptions: {
+    webgl: {
+      alpha: false,
+      antialias: true,
+      preserveDrawingBuffer: true,   // required for html2canvas capture
+      failIfMajorPerformanceCaveat: false,
+    }
+  }
+});
+```
+
+`preserveDrawingBuffer: true` is essential — without it, `html2canvas` reads an empty canvas because WebGL clears the buffer after each frame.
+
+### Imagery layers
+
+Two tile layers are stacked on the globe:
+
+| Layer | Provider | Purpose |
+|---|---|---|
+| Base | Esri World Imagery | High-resolution true-colour satellite tiles up to zoom 19 |
+| Labels | Esri World Boundaries and Places | Country borders, city names, and place labels overlaid on the imagery |
+
+```typescript
+const freeSatelliteProvider = new Cesium.UrlTemplateImageryProvider({
+  url: 'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  credit: 'Esri World Imagery',
+  maximumLevel: 19
+});
+
+const labelsProvider = new Cesium.UrlTemplateImageryProvider({
+  url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+  credit: 'Esri Reference',
+  maximumLevel: 19
+});
+```
+
+The labels layer is added after the viewer is created:
+
+```typescript
+viewer.imageryLayers.addImageryProvider(labelsProvider);
+```
+
+The initial camera view shows the full Earth from a height of 25 000 km, pitched straight down:
+
+```typescript
+viewer.camera.setView({
+  destination: Cesium.Cartesian3.fromDegrees(0, 20, 25000000),
+  orientation: {
+    heading: 0.0,
+    pitch: Cesium.Math.toRadians(-90.0),
+    roll: 0.0,
+  }
+});
+```
+
+## Pan and Draw Area toggle buttons
+
+The bottom control bar holds the two interaction mode buttons:
+
+<CardGroup cols={2}>
+  <Card title="Pan mode (default)" icon="hand">
+    Camera controls are enabled. Drag rotates the globe; scroll wheel zooms. The cursor is the default arrow.
+  </Card>
+  <Card title="Draw Area mode" icon="vector-square">
+    Camera controls are disabled. The cursor becomes a crosshair. Click-and-drag draws a filled rectangle on the globe surface.
+  </Card>
+</CardGroup>
+
+Clicking **Draw Area** switches `mode` to `"draw"` and disables the Cesium camera controller so globe panning does not interfere with the rectangle drag:
+
+```typescript
+if (mode === "draw") {
+  viewer.scene.screenSpaceCameraController.enableInputs = false;
+  viewer.canvas.style.cursor = "crosshair";
+  // ...attach LEFT_DOWN, MOUSE_MOVE, LEFT_UP handlers
+} else {
+  viewer.scene.screenSpaceCameraController.enableInputs = true;
+  viewer.canvas.style.cursor = "default";
+  // ...remove handlers
+}
+```
+
+Once the mouse is released the mode automatically reverts to `"pan"`.
+
+## Drawing a bounding box
+
+<Steps>
+  <Step title="Navigate to the area of interest">
+    In Pan mode, zoom and rotate the globe until the target region is visible. Esri World Imagery provides zoom-19 detail for most populated areas.
+  </Step>
+  <Step title="Click Draw Area">
+    The cursor changes to a crosshair and camera controls are suspended. A `LEFT_DOWN` event listener is registered.
+  </Step>
+  <Step title="Click and drag">
+    Press and hold the mouse button at the first corner. A semi-transparent orange rectangle (fill `#CC5A37` at 20% opacity) updates in real time as you drag, driven by a `CallbackProperty` on the Cesium entity:
+    ```typescript
+    rectangle: {
+      coordinates: new Cesium.CallbackProperty(() => {
+        if (!startRef.current || !endRef.current) return undefined;
+        return Cesium.Rectangle.fromCartographicArray([startRef.current, endRef.current]);
+      }, false),
+      material: Cesium.Color.fromCssColorString('#CC5A37').withAlpha(0.2),
+      outline: true,
+      outlineColor: Cesium.Color.fromCssColorString('#CC5A37'),
+    }
+    ```
+  </Step>
+  <Step title="Release to confirm">
+    On `LEFT_UP` the live rectangle is replaced by a dark persistent outline entity and the four-coordinate bounding box is computed:
+    ```typescript
+    const bounds: [[number, number], [number, number]] = [
+      [minLat, minLon],
+      [maxLat, maxLon]
+    ];
+    setDrawnBounds(bounds);
+    ```
+    Bounding boxes smaller than 0.0001° in either dimension (essentially a single click) are discarded.
+  </Step>
+</Steps>
+
+<Note>
+  The live-drawing rectangle and the confirmed outline rectangle are separate Cesium entities stored in `tempEntityRef` and `finalEntityRef` respectively. The temp entity is removed on mouse-up; the final entity persists until the **Send to Chat** capture clears it.
+</Note>
+
+## Send to Chat — screenshot capture
+
+Once a bounding box is confirmed, the **Send to Chat** button appears in the control bar. Clicking it:
+
+<Steps>
+  <Step title="Remove the outline entity">
+    The dark bounding-box outline is removed from the scene before capture so it does not appear in the screenshot:
+    ```typescript
+    if (finalEntityRef.current) {
+      viewer.entities.remove(finalEntityRef.current);
+      finalEntityRef.current = null;
+    }
+    viewer.render();
+    ```
+  </Step>
+  <Step title="Capture with html2canvas">
+    The Cesium container `div` is rasterized to a `canvas` element using `html2canvas`:
+    ```typescript
+    const canvas = await html2canvas(containerRef.current, {
+      useCORS: true,
+      allowTaint: false
+    });
+    ```
+  </Step>
+  <Step title="Convert to a File object">
+    `canvas.toBlob` produces a PNG `Blob`, which is wrapped in a `File` with an auto-generated name:
+    ```typescript
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const file = new File(
+          [blob],
+          `map-selection-${Date.now()}.png`,
+          { type: "image/png" }
+        );
+        onSelectBounds(drawnBounds, file);
+      }
+    }, "image/png");
+    ```
+  </Step>
+  <Step title="Switch to Chat with pre-filled query">
+    The `onSelectBounds` callback in the parent calls `handleMapSelect`, which:
+    - Generates query text with the corner coordinates: `"Analyze the region at coordinates [lat, lon] to [lat, lon]."`
+    - Adds the screenshot `File` to the pending images queue
+    - Sets `mode` to `"chat"` and focuses the textarea
+    ```typescript
+    const q = `Analyze the region at coordinates [${bounds[0][0].toFixed(4)}, ${bounds[0][1].toFixed(4)}] to [${bounds[1][0].toFixed(4)}, ${bounds[1][1].toFixed(4)}].`;
+    setQuery(q);
+    setMode("chat");
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+  After capture you can edit the auto-generated coordinate query before submitting — add keywords like *"detect water bodies"* or *"identify urban structures"* to focus the analysis.
+</Tip>
+
+<Warning>
+  `html2canvas` requires CORS-enabled tile servers. The Esri tile providers used here serve images without CORS headers; in some browser configurations `allowTaint: false` may produce a blank canvas. If this occurs, use the Image Upload flow with a locally saved GeoTIFF instead.
+</Warning>
+
+## MapSelector component API
+
+```typescript
+interface MapSelectorProps {
+  onSelectBounds: (
+    bounds: [[number, number], [number, number]],
+    imageFile?: File
+  ) => void;
+}
+```
+
+| Prop | Type | Description |
+|---|---|---|
+| `onSelectBounds` | `function` | Called when **Send to Chat** is clicked. Receives the `[[minLat, minLon], [maxLat, maxLon]]` bounding box and the captured PNG `File` (or `undefined` if capture failed). |

@@ -1,0 +1,156 @@
+---
+title: "Environment Variables Reference for Earth Query Lens"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for every environment variable that Earth Query Lens reads, where to set them, and how Vite's VITE_ prefix exposes them to the browser."
+---
+
+Earth Query Lens is a fully client-side application — there is no Node.js server to inject secrets at runtime. Instead, Vite reads variables whose names begin with `VITE_` at **build time** and statically embeds their values into the compiled JavaScript bundle. This means environment variables must be present when you run `npm run build` (or when Vercel builds your deployment), not when the browser opens the app. Understanding this distinction is essential for configuring both local development and production deployments correctly.
+
+---
+
+## How Vite exposes environment variables
+
+Only variables prefixed with `VITE_` are accessible inside browser code. Any variable whose name does **not** start with `VITE_` is intentionally stripped from the bundle by Vite to prevent accidental secret leakage.
+
+Inside TypeScript/JavaScript source files, values are read through the `import.meta.env` object:
+
+```ts
+// Reading VITE_GEMINI_API_KEY inside a component or utility
+const apiKey = import.meta.env["VITE_GEMINI_API_KEY"];
+```
+
+For reference, here is how `satquery.ts` reads `VITE_SATQUERY_API_URL`:
+
+```ts
+// src/lib/satquery.ts
+const env = import.meta.env["VITE_SATQUERY_API_URL"] as string | undefined;
+return (env ?? "").replace(/\/$/, "");
+```
+
+---
+
+## Where to set environment variables
+
+### Local development — `.env.local`
+
+Create a file named `.env.local` in the project root (it is already listed in `.gitignore` and will never be committed). Use `.env.example` as your template:
+
+```bash
+# .env.example — copy to .env.local and fill in your values
+VITE_GEMINI_API_KEY=AIzaSy_YOUR_KEY_HERE
+```
+
+```bash
+cp .env.example .env.local
+# then open .env.local and replace AIzaSy_YOUR_KEY_HERE with your real key
+```
+
+After editing `.env.local`, restart the Vite dev server with `npm run dev` for the new values to take effect.
+
+### Production — Vercel Environment Variables
+
+In the Vercel dashboard, navigate to your project → **Settings → Environment Variables**. Add each key-value pair individually. Vercel injects them into the build environment so that `npm run build` sees them during the Vercel deployment pipeline.
+
+<Tip>
+  Use Vercel's **Environment** selector (Production / Preview / Development) to
+  scope variables. For example, you can set a separate `VITE_GEMINI_API_KEY`
+  for Preview deployments so that pull-request builds consume quota from a
+  dedicated key rather than your production key.
+</Tip>
+
+---
+
+## Variable reference
+
+### `VITE_GEMINI_API_KEY`
+
+<ParamField path="VITE_GEMINI_API_KEY" type="string" required>
+  Your Google Gemini API key. This is the only variable required for the core
+  satellite imagery analysis features to work. Earth Query Lens sends multimodal
+  prompts — including base64-encoded imagery — directly from the browser to the
+  Gemini API using this key. Without it, all analysis requests will fail
+  immediately.
+
+  Obtain a free key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey).
+
+  **Example value:**
+  ```
+  VITE_GEMINI_API_KEY=AIzaSy_YOUR_KEY_HERE
+  ```
+
+  **Minimum permissions:** The key requires access to the Gemini API
+  (`generativelanguage.googleapis.com`) only. No other Google Cloud APIs need
+  to be enabled.
+</ParamField>
+
+### `VITE_SATQUERY_API_URL`
+
+<ParamField path="VITE_SATQUERY_API_URL" type="string">
+  Base URL of a self-hosted SatQuery Python backend. This variable is
+  **optional**. When it is set, the `analyze()` function in `src/lib/satquery.ts`
+  forwards image files and queries to `{VITE_SATQUERY_API_URL}/analyze` instead
+  of — or in addition to — the direct Gemini path. When it is absent or empty,
+  the value defaults to an empty string and the client falls back to the
+  locally-stored URL (if any) set via the in-app Backend settings panel.
+
+  **Example value:**
+  ```
+  VITE_SATQUERY_API_URL=https://satquery.your-domain.com
+  ```
+
+  Trailing slashes are stripped automatically by `getApiBaseUrl()` in
+  `satquery.ts`, so `https://satquery.your-domain.com/` and
+  `https://satquery.your-domain.com` are equivalent.
+
+  **Health check:** The `checkHealth()` utility hits `{base}/health` with a
+  `GET` request to confirm reachability before analysis begins.
+</ParamField>
+
+---
+
+## Security considerations
+
+<Warning>
+  **`VITE_` variables are public by design.** Every value you set under a
+  `VITE_` name is compiled verbatim into your JavaScript bundle and is readable
+  by anyone who opens your site and inspects the source. Treat `VITE_`
+  variables as **client-intended configuration**, not secrets.
+
+  For `VITE_GEMINI_API_KEY` specifically:
+  - Enable **API restrictions** in the Google Cloud Console so the key can only
+    call `generativelanguage.googleapis.com`.
+  - Set a **monthly spending limit** in Google AI Studio to cap runaway usage.
+  - Consider adding **HTTP referrer restrictions** so the key is only accepted
+    when requests originate from your production domain.
+  - Rotate the key immediately if it is ever accidentally committed to a public
+    repository.
+</Warning>
+
+<Note>
+  Variables that do **not** start with `VITE_` — such as private API keys for
+  server-side services — are stripped from the bundle entirely by Vite and
+  cannot be read in the browser. If you need a genuinely secret value, it
+  belongs in a server-side environment, not in this client-side project.
+</Note>
+
+---
+
+## Full `.env.local` template
+
+Below is the complete set of environment variables the application reads, ready to paste into `.env.local`:
+
+```bash .env.local
+# ─────────────────────────────────────────────────────────────
+# Earth Query Lens — local environment configuration
+# Copy this file to .env.local and fill in your values.
+# NEVER commit .env.local to version control.
+# ─────────────────────────────────────────────────────────────
+
+# Required — Gemini API key for satellite imagery analysis
+# Get yours free at: https://aistudio.google.com/apikey
+VITE_GEMINI_API_KEY=AIzaSy_YOUR_KEY_HERE
+
+# Optional — Base URL of a self-hosted SatQuery Python backend
+# Leave blank to use only the direct Gemini integration
+VITE_SATQUERY_API_URL=
+```

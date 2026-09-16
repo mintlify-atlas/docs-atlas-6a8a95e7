@@ -1,0 +1,279 @@
+---
+title: "ResultsDashboard, ExecutionTracePanel & MetadataPanel"
+sidebarTitle: "Results Dashboard"
+description: "Display components that render Gemini Vision analysis results, execution traces, and satellite image metadata from an AnalysisResponse object."
+---
+
+The results layer of Earth Query Lens is composed of three complementary display components: `ResultsDashboard` presents the headline answer and supporting evidence, `ExecutionTracePanel` surfaces the step-by-step backend execution log, and `MetadataPanel` shows per-image sensor metadata. All three components follow the same contract — they only render what the backend actually returns, showing a graceful "Not available" fallback for any absent field.
+
+---
+
+## ResultsDashboard
+
+The primary output component. It receives an `AnalysisResponse` from `@/lib/satquery`, derives a formatted confidence score, normalises the evidence list, and optionally renders a download link to a full structured report.
+
+### Import
+
+```typescript
+import { ResultsDashboard } from "@/components/ResultsDashboard";
+```
+
+### Props
+
+<ParamField body="result" type="AnalysisResponse" required>
+  The full analysis response returned by the backend. All fields are optional — the component degrades gracefully when any subset is absent.
+</ParamField>
+
+### The `AnalysisResponse` type
+
+<ResponseField name="answer" type="string" optional>
+  Primary answer text from the specialist model. Displayed as the headline answer. Falls back to `caption` if absent.
+</ResponseField>
+
+<ResponseField name="caption" type="string" optional>
+  Caption fallback for the headline when `answer` is not present.
+</ResponseField>
+
+<ResponseField name="confidence" type="number" optional>
+  Confidence value. Accepts either a `0–1` fraction or a `0–100` percentage — `formatConfidence()` and `confidenceRatio()` from `@/lib/satquery` normalise both forms. Rendered as a filled progress bar plus a `"XX%"` label.
+</ResponseField>
+
+<ResponseField name="model" type="string" optional>
+  Name of the specialist model used. Falls back to `execution_trace.model` if the top-level field is absent.
+</ResponseField>
+
+<ResponseField name="task" type="string" optional>
+  Short task identifier displayed as a monospace label in the section header.
+</ResponseField>
+
+<ResponseField name="evidence" type="EvidenceItem[] | string[]" optional>
+  Supporting findings. See [Evidence normalisation](#evidence-normalisation) below.
+</ResponseField>
+
+<ResponseField name="execution_trace" type="ExecutionTrace" optional>
+  Full execution trace object. `ResultsDashboard` reads only `execution_trace.disagreement` and `execution_trace.model` from this field; the full trace is rendered by `ExecutionTracePanel`.
+</ResponseField>
+
+<ResponseField name="report_url" type="string" optional>
+  Direct URL to the detailed report PDF or page. Takes precedence over `report_id` when both are present.
+</ResponseField>
+
+<ResponseField name="report_id" type="string" optional>
+  Report identifier. When `report_url` is absent the component constructs the link as `` `${getApiBaseUrl()}/report/${report_id}` ``.
+</ResponseField>
+
+<ResponseField name="warnings" type="string[]" optional>
+  Array of human-readable warning strings displayed below the evidence list.
+</ResponseField>
+
+### Evidence normalisation
+
+The `normalizeEvidence` helper converts the mixed `string[] | EvidenceItem[]` union into a uniform `EvidenceItem[]` before rendering:
+
+```typescript
+// source: ResultsDashboard.tsx
+function normalizeEvidence(evidence: AnalysisResponse["evidence"]): EvidenceItem[] {
+  if (!evidence) return [];
+  return evidence.map((e) => (typeof e === "string" ? { label: e } : e));
+}
+```
+
+Plain strings become `{ label: string }` objects. Full `EvidenceItem` objects (`type`, `label`, `detail`, `description`) pass through unchanged. Each item renders with a green `Check` icon; `label ?? type` is shown in bold with `detail ?? description` as a smaller subtitle line.
+
+### Disagreement warning
+
+When `execution_trace.disagreement` is a non-empty string or boolean `true`, a yellow banner with an `AlertTriangle` icon is shown above the evidence list:
+
+```
+execution_trace.disagreement (string) → displayed verbatim
+execution_trace.disagreement (true)   → "Evidence disagreement detected."
+```
+
+### Report download link
+
+```
+report_url present?  → use report_url directly
+report_url absent, report_id present?
+  → getApiBaseUrl() + "/report/" + report_id
+neither present?  → link is not rendered
+```
+
+### Usage example
+
+```tsx
+import { ResultsDashboard } from "@/components/ResultsDashboard";
+import type { AnalysisResponse } from "@/lib/satquery";
+
+const result: AnalysisResponse = {
+  answer: "Dense urban construction detected in the northern quadrant.",
+  confidence: 0.87,
+  model: "gemini-1.5-flash",
+  task: "change_detection",
+  evidence: [
+    { label: "New rooftop signatures", detail: "14 structures identified" },
+    "Increased impervious surface coverage",
+  ],
+  report_id: "rpt_abc123",
+};
+
+export function ResultsPage() {
+  return <ResultsDashboard result={result} />;
+}
+```
+
+---
+
+## ExecutionTracePanel
+
+`ExecutionTracePanel` renders an observable summary of the backend processing pipeline. It shows only the fields that the backend actually populates — there are no invented or estimated steps.
+
+### Import
+
+```typescript
+import { ExecutionTracePanel } from "@/components/ExecutionTracePanel";
+```
+
+### Props
+
+<ParamField body="trace" type="ExecutionTrace" optional>
+  Execution trace object from `AnalysisResponse.execution_trace`. When absent or empty the panel shows a static placeholder message.
+</ParamField>
+
+<ParamField body="running" type="boolean" optional>
+  When `true`, a spinning `Loader2` icon and **Running** badge are shown in the panel header, and the placeholder text changes to indicate the backend is in progress.
+</ParamField>
+
+### `ExecutionTrace` fields rendered
+
+| Field | Label |
+|---|---|
+| `query` | Query |
+| `inputs` | Input |
+| `detected_task` | Detected task |
+| `validation` | Validation |
+| `specialist` | Specialist |
+| `model` | Model |
+| `steps` | Processing Steps (step list) |
+| `result` | Result |
+| `confidence` | Confidence (formatted via `formatConfidence`) |
+| `errors` | Errors (rose-coloured list) |
+
+### `ExecutionStep` status icons
+
+Each item in `steps` renders with a status icon:
+
+| `status` value | Icon | Colour |
+|---|---|---|
+| `"done"` | `Check` | Emerald |
+| `"running"` | `Loader2` (animated) | Sky blue |
+| `"failed"` | `XCircle` | Rose |
+| `undefined` / other | `CircleDashed` | Slate |
+
+### Usage example
+
+```tsx
+import { ExecutionTracePanel } from "@/components/ExecutionTracePanel";
+import type { ExecutionTrace } from "@/lib/satquery";
+
+const trace: ExecutionTrace = {
+  query: "Are there signs of flooding?",
+  detected_task: "flood_detection",
+  specialist: "GeoChat SAR",
+  model: "geochat-v2",
+  steps: [
+    { name: "Image validation", status: "done" },
+    { name: "SAR backscatter analysis", status: "done", detail: "σ⁰ anomaly at -18 dB" },
+    { name: "Flood mask generation", status: "running" },
+  ],
+  confidence: 0.91,
+};
+
+export function SidePanel() {
+  return <ExecutionTracePanel trace={trace} running={false} />;
+}
+```
+
+<Note>
+  The panel returns an empty placeholder — not `null` — when `trace` is undefined. This keeps the layout stable during the initial loading state before the backend responds.
+</Note>
+
+---
+
+## MetadataPanel
+
+`MetadataPanel` renders per-image technical metadata returned alongside the analysis. It supports multi-image responses by laying out cards in a responsive two-column grid.
+
+### Import
+
+```typescript
+import { MetadataPanel } from "@/components/MetadataPanel";
+```
+
+### Props
+
+<ParamField body="metadata" type="ImageMetadata[]" optional>
+  Array of metadata objects from `AnalysisResponse.metadata`. The component returns `null` (renders nothing) if the array is absent or empty.
+</ParamField>
+
+### `ImageMetadata` fields rendered
+
+| Field | Label | Notes |
+|---|---|---|
+| `filename` | Card heading | Falls back to `"Image N"` |
+| `width` + `height` | Dimensions | Only shown when both are present, formatted as `W × H px` |
+| `bands` | Bands | Array joined with `", "`; number shown as string |
+| `modality` | Sensor type | |
+| `file_type` | File type | |
+| `crs` | Coordinate system | |
+| `resolution` | Resolution | |
+| `validation_status` | Validation | |
+
+### Usage example
+
+```tsx
+import { MetadataPanel } from "@/components/MetadataPanel";
+import type { ImageMetadata } from "@/lib/satquery";
+
+const metadata: ImageMetadata[] = [
+  {
+    filename: "sentinel2_band4.tif",
+    modality: "optical",
+    width: 10980,
+    height: 10980,
+    bands: ["B2", "B3", "B4", "B8"],
+    crs: "EPSG:32633",
+    resolution: "10m",
+    file_type: "GeoTIFF",
+    validation_status: "valid",
+  },
+];
+
+export function ImageInfo() {
+  return <MetadataPanel metadata={metadata} />;
+}
+```
+
+<Tip>
+  All three components — `ResultsDashboard`, `ExecutionTracePanel`, and `MetadataPanel` — are designed to be composed on the same results page. Pass `result.execution_trace` and `result.metadata` directly to their respective components alongside `<ResultsDashboard result={result} />`.
+</Tip>
+
+---
+
+## Composing all three components
+
+```tsx
+import { ResultsDashboard } from "@/components/ResultsDashboard";
+import { ExecutionTracePanel } from "@/components/ExecutionTracePanel";
+import { MetadataPanel } from "@/components/MetadataPanel";
+import type { AnalysisResponse } from "@/lib/satquery";
+
+export function FullResultsView({ result }: { result: AnalysisResponse }) {
+  return (
+    <div className="space-y-6">
+      <ResultsDashboard result={result} />
+      <MetadataPanel metadata={result.metadata} />
+      <ExecutionTracePanel trace={result.execution_trace} running={false} />
+    </div>
+  );
+}
+```

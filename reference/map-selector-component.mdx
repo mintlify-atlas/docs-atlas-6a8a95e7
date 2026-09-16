@@ -1,0 +1,145 @@
+---
+title: "MapSelector Component — CesiumJS Region Drawing"
+sidebarTitle: "MapSelector"
+description: "Interactive CesiumJS globe that lets users pan, zoom, draw a bounding-box region, and capture it as a PNG file for Gemini Vision analysis."
+---
+
+`MapSelector` embeds a full CesiumJS 3-D globe backed by Esri World Imagery satellite tiles directly in the browser — no token, no server proxy. Users switch between a **pan** mode for navigation and a **draw** mode to drag out an area of interest. When the drawn region is confirmed, the component captures the viewport with `html2canvas` and returns both the geographic bounds and a ready-to-upload `File` to the caller via `onSelectBounds`.
+
+## Import
+
+```typescript
+import { MapSelector } from "@/components/MapSelector";
+```
+
+## Props
+
+<ParamField body="onSelectBounds" type="(bounds: [[number, number], [number, number]], imageFile?: File) => void" required>
+  Called once the user clicks **Send to Chat** after drawing a region. The first argument is the bounding box as a nested two-element tuple; the second argument is the PNG screenshot as a browser `File` object (or `undefined` if `html2canvas` fails).
+
+  **Bounds tuple shape**
+
+  ```
+  [
+    [minLat, minLon],   // south-west corner, decimal degrees
+    [maxLat, maxLon]    // north-east corner, decimal degrees
+  ]
+  ```
+</ParamField>
+
+## Internal state
+
+| State variable | Type | Initial value | Description |
+|---|---|---|---|
+| `mode` | `"pan" \| "draw"` | `"pan"` | Current interaction mode. Switching to `"draw"` disables Cesium's camera controls and sets cursor to `crosshair`. |
+| `drawnBounds` | `[[number,number],[number,number]] \| null` | `null` | Stored after the user completes a valid draw gesture. Cleared after capture. |
+| `capturing` | `boolean` | `false` | `true` while `html2canvas` is running. Disables the **Send to Chat** button and shows an animated `"Capturing..."` label. |
+
+## CesiumJS setup
+
+The viewer is initialised once in a `useEffect` and stored in `viewerRef`. All standard UI chrome (animation widget, timeline, geocoder, etc.) is disabled.
+
+### Imagery layers
+
+| Layer | Provider | URL template | Purpose |
+|---|---|---|---|
+| Base (index 0) | `Esri World Imagery` | `https://services.arcgisonline.com/.../World_Imagery/MapServer/tile/{z}/{y}/{x}` | High-resolution satellite imagery |
+| Overlay (index 1) | `Esri Reference` | `https://services.arcgisonline.com/.../World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}` | Country & place-name labels |
+
+Both providers use `maximumLevel: 19`. `Cesium.Ion.defaultAccessToken` is intentionally left as an empty string — the component uses only free Esri tile endpoints.
+
+### Initial camera
+
+```
+destination : Cesium.Cartesian3.fromDegrees(0, 20, 25_000_000)
+heading     : 0.0 rad
+pitch       : -90° (straight down)
+roll        : 0.0 rad
+```
+
+## Draw interaction
+
+Draw mode is activated by clicking **Draw Area**. The `mode` state drives a second `useEffect` that registers or tears down `ScreenSpaceEventHandler` listeners:
+
+```
+LEFT_DOWN  → record start Cartographic; attach live-updating CallbackProperty rectangle
+MOUSE_MOVE → update endRef so the rectangle stretches in real time
+LEFT_UP    → finalise bounds; minimum-size check; persist final rectangle; auto-switch to pan
+```
+
+### Minimum-size threshold
+
+After `LEFT_UP` the component rejects the gesture if the drawn box is too small to be meaningful:
+
+```
+Math.abs(maxLat - minLat) > 0.0001  OR  Math.abs(maxLon - minLon) > 0.0001
+```
+
+If the check fails (i.e. the user just clicked without dragging) no bounds are stored and no rectangle is drawn.
+
+### Rectangle styling
+
+| Phase | Fill | Outline colour |
+|---|---|---|
+| Live drag | `#CC5A37` at 20% opacity | `#CC5A37` |
+| Final (confirmed) | `#1F1E1B` at 10% opacity | `#1F1E1B` |
+
+The final rectangle entity is removed immediately before the `html2canvas` capture so the overlay does not appear in the exported image.
+
+## Capture sequence
+
+Triggered by the **Send to Chat** button (visible only when `drawnBounds` is non-null):
+
+```
+1. setCapturing(true)
+2. Remove finalEntityRef rectangle from viewer.entities
+3. viewer.render()                    ← flush the removal before capture
+4. html2canvas(containerRef.current, { useCORS: true, allowTaint: false })
+5. canvas.toBlob(...)
+   ├─ blob OK  → new File([blob], `map-selection-${Date.now()}.png`, { type: "image/png" })
+   │            → onSelectBounds(drawnBounds, file)
+   └─ blob null → onSelectBounds(drawnBounds)          ← bounds only, no file
+6. setCapturing(false); setDrawnBounds(null)
+```
+
+If `html2canvas` throws, the error is logged and `onSelectBounds(drawnBounds)` is called without a file, so the analysis pipeline can still proceed with coordinate data alone.
+
+<Note>
+  `preserveDrawingBuffer: true` is passed in the Cesium `contextOptions` so WebGL content is readable by `html2canvas`. Without this flag, the canvas snapshot would be blank on most browsers.
+</Note>
+
+## Usage example
+
+```tsx
+import { MapSelector } from "@/components/MapSelector";
+
+export function AnalysisPage() {
+  const handleBounds = (
+    bounds: [[number, number], [number, number]],
+    imageFile?: File,
+  ) => {
+    const [[minLat, minLon], [maxLat, maxLon]] = bounds;
+    console.log(`Selected region: ${minLat},${minLon} → ${maxLat},${maxLon}`);
+
+    if (imageFile) {
+      // Pass imageFile directly to the analyze() call
+      console.log("Captured image:", imageFile.name, imageFile.size, "bytes");
+    }
+  };
+
+  return (
+    // MapSelector fills its parent — give it an explicit height
+    <div style={{ height: "500px" }}>
+      <MapSelector onSelectBounds={handleBounds} />
+    </div>
+  );
+}
+```
+
+<Tip>
+  Give `MapSelector`'s parent a fixed or percentage height. The component uses `flex-1` internally for the globe area and will collapse to zero if the outer container has no height constraint.
+</Tip>
+
+## Cleanup
+
+The `useEffect` that initialises the viewer returns a cleanup function that calls `handler.destroy()` and `viewer.destroy()`, preventing memory leaks when the component unmounts (e.g. on navigation).
